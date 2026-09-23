@@ -1,0 +1,28 @@
+Real-time meeting assistant (实时会议助理)
+Copyright (C) 2026 aihaili <https://github.com/aihaili>
+
+本程序是自由软件：你可以依据自由软件基金会发布的 GNU Affero 通用公共许可证
+（第 3 版或你选择的任何更新版本）的条款再分发和/或修改它。
+
+本程序的分发是希望它有用，但不提供任何担保，甚至不提供适销性或特定用途适用性的
+默示担保。详见 GNU Affero 通用公共许可证。许可证全文见 LICENSE。
+
+若某种用法无法满足 AGPL 第 13 条的源码公开义务——例如把本程序闭源集成进对外销售的
+产品，或把它作为网络服务提供给第三方而不愿公开自己改动过的源码——可以向作者单独
+取得商业授权（双授权）。洽谈入口：
+<https://github.com/aihaili/meeting-assistant/issues>
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+The full license text is in LICENSE.
+
+A separate commercial license is available for use that cannot meet the AGPL's
+source-disclosure obligations -- for example embedding this software in a
+closed-source product, or offering it to third parties as a hosted service.
+See <https://github.com/aihaili/meeting-assistant/issues>

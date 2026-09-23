@@ -1,0 +1,47 @@
+# Core
+requests>=2.28
+python-dotenv>=1.0
+numpy>=1.24
+
+# Audio
+funasr>=1.0
+torch>=2.0
+torchaudio>=2.0
+
+# RAG (scripts/rag/) — hybrid retrieval over SQLite
+sqlite-vec>=0.1.9
+jieba>=0.42
+
+# Embeddings: ONNX Runtime + tokenizers, INT8 quantised.
+#   bge-small-zh-v1.5  ONNX INT8   23.9 MB  (Chinese, 512-dim)   <- default
+#   bge-m3             ONNX INT8  568.5 MB  (multilingual 100+, 1024-dim)
+#
+# Deliberately NOT transformers/torch on this path. Measured: `import transformers`
+# alone costs ~3.9 s inside importlib.metadata.packages_distributions(), and it must
+# be paid on every cold start. `tokenizers` reads tokenizer.json in 10 ms and brings
+# truncation/padding/attention-mask handling with it.
+#   cold start: 14.5 s (torch+transformers)  ->  0.96 s (onnxruntime+tokenizers)
+#   warm query:     65 ms                    ->   4.4 ms
+#   GPU usage:     5.4 GB                    ->      0
+onnxruntime>=1.20
+tokenizers>=0.20
+
+# Optional: WeMM-Embedding-2B (multimodal) needs torch+transformers. Not used by
+# default — it was dropped because bge-small-zh INT8 is 24 MB vs 5.09 GB, has roughly
+# double the query separation, and WeMM has no quantised release.
+#   torch>=2.0
+#   transformers>=5.17
+
+# Optional engine: FireRedASR2S ASR backend (set asr.engine = "firered" in settings).
+#   Higher accuracy (CER 3.05% vs FunASR 4.16%) + BERT punctuation. The ~5GB model
+#   stack is NOT in this package — it lives in asr.firered_dir (default
+#   E:\WhisperX\FireRedASR2S). These are the small Python deps that backend needs;
+#   torch/torchaudio/transformers are already on the core path above.
+kaldiio>=2.18
+kaldi_native_fbank>=1.22
+sentencepiece>=0.1.96
+cn2an>=0.5.22
+soundfile>=0.12
+
+# Optional: ffmpeg (system package, not pip)
+# apt install ffmpeg

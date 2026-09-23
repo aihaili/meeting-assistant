@@ -1,0 +1,30 @@
+# Secrets
+.env
+
+# RAG module: generated indexes and test corpora
+data/
+*.db
+
+# 本地私有交接文档：含真实客户/项目/人员数据 —— 只留本地，不要开源
+# 注意用 *HANDBACK*.md（不是 *_HANDBACK.md）：后者漏掉了用连字符命名的那几份。
+*HANDBACK*.md
+
+# 本地私有专题分析文档（含真实通话与客户数据）：只留本地，不进仓库
+docs/SPEAKER-ID-RESULTS-*.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+funasr-venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+/tmp/
+*.tmp
+*.wav

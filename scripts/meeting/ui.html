@@ -1,0 +1,4399 @@
+<!DOCTYPE html>
+<!-- saved from url=(0022)http://127.0.0.1:8510/ -->
+<html lang="zh-CN" data-theme="dark" data-darkreader-proxy-injected="true"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实时会议助理</title>
+<!-- 主题必须在首帧之前定下来。放在 <head> 里同步执行：如果等 </body> 前的脚本才跑，
+     浏览器已经按亮色画过一帧，暗色用户会看到一次白闪。localStorage 在隐私模式下
+     可能抛异常，所以整段包在 try 里，并回落到暗色（当前主打的主题）。 -->
+<script>
+(function () {
+  var theme = "dark";
+  try {
+    theme = localStorage.getItem("plaud-theme") || "dark";
+  } catch (e) { /* 隐私模式：用默认值 */ }
+  document.documentElement.setAttribute("data-theme", theme);
+})();
+</script>
+<!-- 内联 favicon：不加这一行浏览器会请求 /favicon.ico 拿到 404，审计里就是一条
+     控制台错误。一个 200 字节的 data URI 换一个干净的控制台，划算。 -->
+<link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'&gt;&lt;rect width='16' height='16' rx='4' fill='%231f5fd0'/&gt;&lt;path d='M4 8h8M8 4v8' stroke='white' stroke-width='1.6' stroke-linecap='round'/&gt;&lt;/svg&gt;">
+<style>
+/* ============================================================================
+   设计系统
+   ----------------------------------------------------------------------------
+   底色用暖调白而不是纯白：整场会议要盯着看两小时，纯白在 LCD 上偏刺眼。
+   层次靠三层 surfaces + 发丝级边框表达，不靠阴影堆叠——阴影在密集列表里
+   会变成视觉噪音。强调色只给"需要动作"的东西，正文永远是中性色。
+   ============================================================================ */
+:root{
+  color-scheme: light;
+
+  --bg:#f6f7f9;
+  --surface:#ffffff;
+  --surface-2:#f1f3f6;
+  --surface-3:#e8ebf0;
+  --line:#e2e6ec;
+  --line-strong:#cdd4de;
+  --text:#111827;
+  --text-2:#4b5563;      /* 次要正文：7.05:1 on page */
+  --text-3:#5f6878;      /* 小字/时间戳：5.24:1 —— 审计发现原 #8a93a3 只有 2.89:1，
+                            在会议室投影上等于看不见。这个值由 pick_contrast.py
+                            算出来，是同时在三种底色上通过 AA 的档位。 */
+  --text-4:#7d8694;      /* 纯装饰（分隔、位置已表意的提示）：3.43:1 */
+  --accent:#1f5fd0;
+  --accent-hi:#1a52b8;   /* 悬停/按下 */
+  --accent-soft:#eaf0fd;
+  --accent-line:#bcd0f5;
+  /* 强调色上的文字。暗色下强调色更亮，所以这个必须跟着主题变——
+     写死 #fff 会在暗色的浅蓝按钮上变成白底白字。 */
+  --on-accent:#ffffff;
+
+  /* 便签。亮色下是暖米色"纸"；暗色下不能沿用米色（它在深背景上像一块高亮），
+     所以单独令牌化，两种主题各自取值。 */
+  --note-bg:#fffdf6;
+  --note-bg-done:#f6f8f6;
+  --note-line:#ece4cf;
+  --note-line-done:#dfe6df;
+  --note-inner:#ffffff;
+  --note-inner-line:#e8e4d8;
+  --note-quote:#e8e0cc;
+
+  /* 浮层与交互态 */
+  --hover-veil:rgba(255,255,255,.7);
+  --btn-hover-line:#b9c1cd;
+  --scroll-thumb:#d3d9e2;
+  --scroll-thumb-hi:#b9c1cd;
+  --ok:#16a34a;
+  --ok-soft:rgba(22,163,74,.16);
+  /* "成功"的**文字**色单独一支。--ok 是给图标和描边用的，直接拿去写字在亮色下
+     只有 2.98:1（#16a34a 落在 #f1f3f6 上）——绿色在白底上天生吃亏，靠"看着还行"
+     判断不出来，所以暗色也一并给值，两边都用同一个语义位。 */
+  --ok-ink:#0c6b30;
+
+  /* 阴影。暗色下黑色阴影在深背景上几乎不可见，需要更深的黑和更大不透明度，
+     否则卡片"浮"不起来、层次整个消失——所以阴影也必须令牌化。 */
+  --shadow-1:0 1px 3px rgba(17,24,39,.07);
+  --shadow-2:0 1px 2px rgba(17,24,39,.05),0 8px 20px -10px rgba(17,24,39,.22);
+  --shadow-3:0 2px 4px rgba(17,24,39,.06),0 14px 30px -12px rgba(17,24,39,.3);
+  --shadow-accent:0 0 0 3px var(--accent-soft),0 14px 30px -12px rgba(17,24,39,.3);
+  --shadow-ghost:0 8px 20px -6px rgba(0,0,0,.4);
+  --shadow-pop:0 12px 32px -8px rgba(17,24,39,.22),0 2px 6px rgba(17,24,39,.06);
+
+  /* 语义色都按"在自身浅底上 ≥4.5:1"重新定过。原值里 requirement 的 #c2410c
+     在 #fdf1e7 上只有 4.0:1，term 的 #475569 在 #eef1f5 上 3.9:1，都在小字号
+     下不达标。 */
+  --req:#a63a09;   --req-bg:#fdf1e7;   --req-line:#f2d3ba;
+  --com:#0d6a63;   --com-bg:#e6f4f2;   --com-line:#b8e0da;
+  --date:#8a5306;  --date-bg:#fbf4e3;  --date-line:#eddfb6;
+  --risk:#a51a1a;  --risk-bg:#fdeceb;  --risk-line:#f3c9c6;
+  --agr:#6023c4;   --agr-bg:#f2ecfd;   --agr-line:#dccdf7;
+  --clause:#1a45c2;--clause-bg:#eaf0fd;--clause-line:#c6d8f7;
+  --dec:#0369a1;   --dec-bg:#e8f3fa;   --dec-line:#c2e0f0;
+  --term:#3f4a5a;  --term-bg:#eef1f5;  --term-line:#d6dce4;
+  --who:#a3144e;   --who-bg:#fdeef4;   --who-line:#f4cddd;
+  --org:#0b6076;   --org-bg:#e7f4f7;   --org-line:#c1e2e9;
+
+  --radius:10px;
+  --radius-sm:7px;
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,"SF Mono",monospace;
+  --sans:"HarmonyOS Sans SC","HarmonyOS_Sans_SC","PingFang SC","Microsoft YaHei",
+         "Segoe UI",system-ui,-apple-system,sans-serif;
+}
+
+/* ── 暗色主题 ──────────────────────────────────────────────────────── */
+/* 暗色不是把亮色反相。三个刻意的决定：
+
+   ① 底色用**冷灰**而不是纯黑。纯黑在 LCD 上与卡片的明度差过硬，长时间看疲劳，
+      而且会让所有阴影彻底失效（黑投在黑上）。用 #0f1216 打底、卡片 #171b21，
+      层次靠明度差而不是阴影。
+   ② 正文不用纯白。纯白在暗底上有明显光晕（halation），中文细笔画尤其糊。
+      用 #e8ebf1（对底色 14.6:1），远高于 AA 又不刺眼。
+   ③ 语义色全部**提亮**。亮色下的 #a63a09 在深底上只有约 2.1:1，等于看不见。
+      每一类的前景色单独调亮、底色改成低饱和深色调，保住"同类同色"的辨识度。
+
+   这些值由 audit_ui.js 在暗色下自动跑一遍对比度检查来验证，不是凭感觉定的。 */
+:root[data-theme="dark"]{
+  color-scheme: dark;
+
+  --bg:#0f1216;
+  --surface:#171b21;
+  --surface-2:#1e232b;
+  --surface-3:#262c35;
+  --line:#2a3139;
+  --line-strong:#3a424d;
+  --text:#e8ebf1;
+  --text-2:#b6bfcc;
+  --text-3:#98a2b0;
+  --text-4:#78828f;
+  --accent:#5b9bff;
+  --accent-hi:#7cb0ff;
+  --accent-soft:#152238;
+  --accent-line:#2b4a7d;
+  --on-accent:#0b1220;
+
+  --note-bg:#20242b;
+  --note-bg-done:#1b1f24;
+  --note-line:#333a44;
+  --note-line-done:#2c333c;
+  --note-inner:#191d23;
+  --note-inner-line:#313842;
+  --note-quote:#39414c;
+
+  --hover-veil:rgba(255,255,255,.035);
+  --btn-hover-line:#4a535f;
+  --scroll-thumb:#333b45;
+  --scroll-thumb-hi:#454e5a;
+  --ok:#4ade80;
+  --ok-soft:rgba(74,222,128,.18);
+  --ok-ink:#4ade80;
+
+  --shadow-1:0 1px 3px rgba(0,0,0,.5);
+  --shadow-2:0 1px 2px rgba(0,0,0,.4),0 8px 20px -10px rgba(0,0,0,.7);
+  --shadow-3:0 2px 4px rgba(0,0,0,.45),0 14px 30px -12px rgba(0,0,0,.8);
+  --shadow-accent:0 0 0 3px var(--accent-soft),0 14px 30px -12px rgba(0,0,0,.8);
+  --shadow-ghost:0 8px 20px -6px rgba(0,0,0,.75);
+  --shadow-pop:0 12px 32px -8px rgba(0,0,0,.7),0 2px 6px rgba(0,0,0,.5);
+
+  --req:#f2a377;   --req-bg:#33231a;   --req-line:#5a3a28;
+  --com:#5fd4c3;   --com-bg:#122b28;   --com-line:#27544e;
+  --date:#e8c069;  --date-bg:#2e2716;  --date-line:#54492a;
+  --risk:#f28b8b;  --risk-bg:#331b1b;  --risk-line:#5c3232;
+  --agr:#c0a6fb;   --agr-bg:#241b38;   --agr-line:#463464;
+  --clause:#8fb4ff;--clause-bg:#182640;--clause-line:#2f4a78;
+  --dec:#7cc4ee;   --dec-bg:#14262f;   --dec-line:#28485a;
+  --term:#a7b3c2;  --term-bg:#1f242b;  --term-line:#39424e;
+  --who:#f2a0c0;   --who-bg:#331b26;   --who-line:#5c3245;
+  --org:#7fd0e8;   --org-bg:#122a31;   --org-line:#26505e;
+}
+
+/* 这一行的位置很要紧：它必须是一个完整的、独立的顶层规则。
+   之前这里多了一个 }，于是 CSS 解析器把 "} *" 当成了一条选择器的前奏，
+   和后面的 {box-sizing:border-box} 合成一条**非法规则整体丢弃**——
+   后果不是"少一条样式"，而是全站所有 width:100% + padding 的输入框都多出
+   22px（7px 上下内边距 + 1px 边框各算两份），面板被撑出横向滚动条。
+   靠肉眼看是发现不了的：控件看着只是"稍微宽了一点"。 */
+*{box-sizing:border-box}
+html,body{height:100%}
+/* 整页用 flex 纵向排布，而不是给 main 写 height:calc(100vh - 52px)。
+   顶栏在窄屏会换行到 80–90px 高，写死的 52px 会让页面比视口高出一截。
+   交给 flex 算，顶栏多高都不影响。 */
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font-family:var(--sans);
+  font-size:14px;line-height:1.65;
+  display:flex;flex-direction:column;overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+::selection{background:var(--accent-soft)}
+
+/* 滚动条：细、无轨道、只有拖动时才明显 */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:6px;
+  border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hi);border:2px solid transparent;
+  background-clip:content-box}
+
+/* ── 顶栏 ─────────────────────────────────────────────────────────── */
+header{
+  min-height:52px;display:flex;align-items:center;gap:14px;
+  padding:6px 16px;background:var(--surface);
+  border-bottom:1px solid var(--line);position:sticky;top:0;z-index:30;
+  /* 顶栏里全是 nowrap 的小块，不能收缩也不能换行时会整体撑破页面——审计在
+     820px 上量到 header scrollWidth 855px。允许换行并让各块可以收缩。 */
+  flex-wrap:wrap;row-gap:6px;
+}
+.brand{display:flex;align-items:center;gap:9px;font-weight:650;font-size:14.5px;
+       letter-spacing:-.01em;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--text-3);flex:none;
+     transition:background .3s}
+.dot.live{background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft);
+          animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.meeting-title{
+  font-weight:500;color:var(--text-2);font-size:13.5px;border:0;background:none;
+  font-family:inherit;padding:4px 8px;border-radius:var(--radius-sm);
+  min-width:60px;flex:0 1 auto;width:220px;
+  text-overflow:ellipsis;
+}
+.meeting-title:hover{background:var(--surface-2)}
+.meeting-title:focus{outline:2px solid var(--accent-line);background:var(--surface)}
+
+.spacer{flex:1 1 auto;min-width:0}
+.stat{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-3);
+      white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden}
+.stat b{color:var(--text-2);font-weight:600;font-variant-numeric:tabular-nums}
+.stat .k{color:var(--text-4)}
+.sep{width:1px;height:20px;background:var(--line);flex:none}
+
+/* 按钮图标 */
+.btn>svg{flex:0 0 auto;margin-right:5px}
+.btn{
+
+  font:inherit;font-size:13px;font-weight:500;cursor:pointer;
+  padding:6px 12px;border-radius:var(--radius-sm);
+  border:1px solid var(--line-strong);background:var(--surface);color:var(--text-2);
+  transition:background .13s,border-color .13s,color .13s;
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
+}
+.btn:hover{background:var(--surface-2);border-color:var(--btn-hover-line);color:var(--text)}
+.btn:active{transform:translateY(.5px)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.primary:hover{background:#1a52b8;border-color:#1a52b8;color:var(--on-accent)}
+/* ghost 按钮原本把边框设成透明（无描边）。用户要求"像 Ctrl K 那个框一样有描边"，
+   所以这里用**和 kbd 同一个变量** var(--line-strong)——不新造一种边框色，
+   否则界面上会出现两种"看起来差不多但不一样"的框。
+   底边不加粗（kbd 的 2px 是键帽的隐喻，用在按钮上会显得按钮像被压住）。 */
+.btn.ghost{border-color:var(--line-strong);background:transparent}
+.btn.ghost:hover{background:var(--surface-2)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn .kbd{margin-left:2px}
+kbd{
+  font-family:var(--mono);font-size:10.5px;line-height:1.5;padding:1px 4px;
+  border:1px solid var(--line-strong);border-bottom-width:2px;border-radius:4px;
+  background:var(--surface-2);color:var(--text-3);
+}
+/* ── 三栏 ─────────────────────────────────────────────────────────── */
+/* 用 minmax(x, x) 固定侧栏、minmax(0,1fr) 让中栏吃掉剩余宽度。纯固定值 +
+   百分比会在某些宽度下把网格撑破，而 1fr 的最小值默认是 auto——中栏里的
+   长发言会让整个网格横向溢出。minmax(0,1fr) 才是"可以缩到 0"的意思。 */
+main{
+  display:grid;grid-template-columns:264px minmax(0,1fr) 420px;
+  flex:1 1 auto;min-height:0;
+  transition:grid-template-columns .22s cubic-bezier(.4,0,.2,1);
+}
+main.hide-left{grid-template-columns:0 minmax(0,1fr) 420px}
+main.hide-right{grid-template-columns:264px minmax(0,1fr) 0}
+main.hide-left.hide-right{grid-template-columns:0 minmax(0,1fr) 0}
+
+/* 折叠时整个栏位一起从布局里移除。先试的是 visibility:hidden —— 审计证明它不够：
+   栏宽塌到 1px 时内容仍然是布局的一部分，.col-body 的 16px 内边距照样把
+   scrollWidth 撑到 82px，于是"折叠"反而制造了横向溢出。
+   display:none 才真的把内容拿掉（也因此不再需要 pointer-events 那一套）。 */
+main.hide-left #col-left,main.hide-right #col-right{
+  display:none;
+}
+
+.col{overflow:hidden;display:flex;flex-direction:column;min-width:0}
+/* 便签层绝对定位在发言流上方，所以中栏必须是定位上下文 */
+.col.mid{position:relative}
+/* 显式占用网格列。不写这三行的话，折叠掉某一栏（display:none）会让中栏被自动
+   放置到第一个网格列里——那是一个 0 宽的空列，于是中栏在窄屏上被压成 224px。
+   审计在 1000px/820px 上抓到过这个：中栏宽度 224px，而不是剩下的全部。 */
+#col-left{grid-column:1}
+#col-mid{grid-column:2}
+#col-right{grid-column:3}
+.col.left{border-right:1px solid var(--line);background:var(--surface)}
+.col.right{border-left:1px solid var(--line);background:var(--surface)}
+.col.mid{background:var(--bg)}
+
+.col-head{
+  flex:none;padding:13px 14px 10px;display:flex;align-items:center;gap:8px;
+  border-bottom:1px solid var(--line);
+}
+.col-head h2{
+  margin:0;font-size:11.5px;font-weight:650;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--text-3);white-space:nowrap;
+}
+.col-head .count{
+  font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-3);
+  background:var(--surface-2);border-radius:20px;padding:1px 7px;
+}
+.col-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:10px}
+.col-body.tight{padding:8px}
+
+/* ── 左栏：参会人员 ───────────────────────────────────────────────── */
+.person{
+  display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:var(--radius-sm);
+  cursor:pointer;transition:background .12s;position:relative;
+}
+.person:hover{background:var(--surface-2)}
+.person.active{background:var(--accent-soft)}
+.person.active::before{
+  content:"";position:absolute;left:0;top:8px;bottom:8px;width:2.5px;
+  border-radius:2px;background:var(--accent);
+}
+.avatar{
+  width:28px;height:28px;border-radius:50%;flex:none;
+  display:flex;align-items:center;justify-content:center;
+  font-size:12px;font-weight:650;color:var(--on-accent);letter-spacing:-.02em;
+  transition:box-shadow .2s;
+}
+.person.speaking .avatar{box-shadow:0 0 0 2px var(--surface),0 0 0 4px currentColor}
+.person.speaking{background:var(--accent-soft)}
+.p-meta{min-width:0;flex:1}
+.p-name{font-size:13.5px;font-weight:550;white-space:nowrap;overflow:hidden;
+        text-overflow:ellipsis}
+.p-sub{font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;
+       text-overflow:ellipsis;display:flex;gap:6px;align-items:center}
+.voice-chip{
+  font-size:10px;padding:0 5px;border-radius:4px;line-height:15px;flex:none;
+  border:1px solid var(--line-strong);color:var(--text-3);background:var(--surface-2);
+}
+.voice-chip.on{border-color:var(--com-line);background:var(--com-bg);color:var(--com)}
+.person .rm{
+  opacity:0;border:0;background:none;color:var(--text-3);cursor:pointer;
+  font-size:15px;line-height:1;padding:2px 4px;border-radius:4px;flex:none;
+}
+.person:hover .rm{opacity:1}
+.person .rm:hover{background:var(--risk-bg);color:var(--risk)}
+
+.add-row{display:flex;gap:6px;padding:8px 4px 2px}
+.add-row input{
+  flex:1;min-width:0;font:inherit;font-size:13px;padding:6px 9px;
+  border:1px solid var(--line);border-radius:var(--radius-sm);
+  background:var(--surface-2);color:var(--text);
+}
+.add-row input:focus{outline:none;border-color:var(--accent-line);
+                     background:var(--surface);box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* ── 会议流程 / 我的发言计划 ──────────────────────────────────────── */
+/* 两块并排而不是叠放：它们方向相反，并排才能一眼看出"主持人要讲的"和
+   "我要讲的"是否对得上。空间不够时允许换行，不压缩字号。 */
+.planbar{
+  flex:none;display:flex;flex-wrap:wrap;background:var(--surface);
+  border-bottom:1px solid var(--line);
+}
+.plan{flex:1 1 300px;min-width:0;display:flex;flex-direction:column}
+.plan + .plan{border-left:1px solid var(--line)}
+@media (max-width:900px){ .plan + .plan{border-left:0;border-top:1px solid var(--line)} }
+.pl-head{
+  display:flex;align-items:center;gap:7px;padding:8px 12px 7px;cursor:pointer;
+  user-select:none;
+}
+.pl-head h2{
+  margin:0;font-size:11.5px;font-weight:650;letter-spacing:.05em;
+  text-transform:uppercase;color:var(--text-3);white-space:nowrap;
+}
+.pl-head .count{
+  font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-3);
+  background:var(--surface-2);border-radius:20px;padding:1px 7px;flex:none;
+}
+.pl-src{
+  font-size:10.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:150px;flex:0 1 auto;
+}
+.pl-btn{
+  border:1px solid var(--line);background:var(--surface);color:var(--text-2);
+  font:inherit;font-size:11.5px;padding:2px 9px;border-radius:20px;cursor:pointer;
+  flex:none;
+}
+.pl-btn:hover{border-color:var(--line-strong);background:var(--surface-2)}
+.pl-list{display:none;padding:0 12px 9px;flex-direction:column;gap:4px;
+         max-height:190px;overflow-y:auto}
+.plan.open .pl-list{display:flex}
+.pl-item{
+  display:flex;align-items:flex-start;gap:7px;padding:5px 8px;border-radius:var(--radius-sm);
+  background:var(--surface-2);cursor:pointer;transition:background .12s;
+  border-left:2.5px solid var(--line-strong);position:relative;
+}
+.pl-item:hover{background:var(--surface-3)}
+.pl-item.sel{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
+.pl-item.done{border-left-color:var(--com);opacity:.6}
+.pl-item.done .pl-topic{text-decoration:line-through;text-decoration-thickness:1px;
+                        text-decoration-color:var(--text-4)}
+.pl-item.confirm{border-left-color:var(--req)}
+.pl-item.report{border-left-color:var(--dec)}
+.pl-item.followup{border-left-color:var(--agr)}
+.pl-tick{
+  flex:none;width:14px;height:14px;margin-top:2px;border-radius:4px;
+  border:1.5px solid var(--line-strong);background:var(--surface);position:relative;
+}
+.pl-item.done .pl-tick{background:var(--com);border-color:var(--com)}
+.pl-item.done .pl-tick::after{
+  content:"";position:absolute;left:3.5px;top:0.5px;width:4px;height:7px;
+  border:solid var(--note-inner);border-width:0 1.5px 1.5px 0;transform:rotate(43deg);
+}
+.pl-body{min-width:0;flex:1}
+.pl-topic{font-size:13px;font-weight:550;line-height:1.45}
+.pl-meta{font-size:11px;color:var(--text-3);line-height:1.45;margin-top:1px;
+         display:flex;gap:6px;flex-wrap:wrap}
+.pl-slot{font-family:var(--mono);font-size:10.5px}
+.pl-who{color:var(--accent)}
+/* prep 项的来源：可能是拖进来的某句发言，也可能是引用的文件条款 */
+.pl-from{
+  font-size:10.5px;color:var(--text-3);margin-top:3px;padding-left:7px;
+  border-left:2px solid var(--surface-3);line-height:1.5;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+}
+.pl-from b{color:var(--text-2);font-weight:600}
+.pl-rm{
+  opacity:0;border:0;background:none;color:var(--text-3);cursor:pointer;
+  font-size:14px;line-height:1;padding:0 3px;border-radius:4px;flex:none;
+}
+.pl-item:hover .pl-rm{opacity:1}
+.pl-rm:hover{background:var(--risk-bg);color:var(--risk)}
+.pl-add{display:flex;gap:5px;padding-top:2px}
+.pl-add input{
+  flex:1;min-width:0;font:inherit;font-size:12.5px;padding:5px 8px;
+  border:1px solid var(--line);border-radius:var(--radius-sm);
+  background:var(--surface-2);color:var(--text);
+}
+.pl-add input:focus{outline:none;border-color:var(--accent-line);background:var(--surface)}
+.pl-empty{font-size:11.5px;color:var(--text-4);padding:2px 0 6px;line-height:1.6}
+
+/* 拖拽反馈。发言流里的每一段都可以拖进「我的发言计划」。 */
+.utt.dragging{opacity:.45}
+.pl-list.droptarget{
+  background:var(--accent-soft);outline:2px dashed var(--accent-line);
+  outline-offset:-2px;border-radius:var(--radius-sm);
+}
+.drop-hint{
+  position:fixed;pointer-events:none;z-index:70;background:var(--text);color:var(--on-accent);
+  font-size:12px;padding:5px 10px;border-radius:6px;
+  box-shadow:var(--shadow-ghost);
+}
+
+/* 计划项上钉住的参考依据 */
+.pl-refs{margin-top:5px;display:flex;flex-direction:column;gap:3px}
+.pl-refs-h{
+  font-size:10px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--text-4);
+}
+.pl-ref{
+  position:relative;background:var(--surface);border:1px solid var(--line);
+  border-left:2.5px solid var(--clause);border-radius:var(--radius-sm);
+  padding:4px 20px 4px 7px;
+}
+.pl-ref-t{font-size:11.5px;font-weight:600;color:var(--accent);line-height:1.4;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pl-ref-x{font-size:11px;color:var(--text-3);line-height:1.5;
+          display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+          overflow:hidden}
+.pl-ref-rm{
+  position:absolute;right:2px;top:2px;border:0;background:none;cursor:pointer;
+  color:var(--text-4);font-size:13px;line-height:1;padding:1px 4px;border-radius:4px;
+}
+.pl-ref-rm:hover{background:var(--risk-bg);color:var(--risk)}
+
+/* 拖参考依据时的落点高亮 */
+.pl-item.refdrop{
+  outline:2px dashed var(--accent);outline-offset:-2px;background:var(--accent-soft);
+}
+
+/* 拖拽来源：右栏的检索卡 */
+.res, .ref{cursor:grab}
+.res:active, .ref:active{cursor:grabbing}
+.res.dragging, .ref.dragging{opacity:.45}
+
+/* ── 发言计划：便签层 ──────────────────────────────────────────────── */
+/* 为什么不是折叠面板：面板一次只能看到几条，"看不见全貌"是它最大的问题。
+   而发言计划本身就是几个离散要点，便签的形状和它一致——每条要点一张，
+   位置由用户自己摆，摆法本身就是在组织发言顺序。 */
+/* 入口条（在中栏底部，只是个标题栏 + 计数 + 新建） */
+.notes{
+  position:relative;flex:none;
+  display:flex;align-items:center;gap:7px;padding:6px 12px;
+  background:var(--surface);border-top:1px solid var(--line);
+}
+.notes.hidden{opacity:.5}
+/* .notes-head 内部有 .spacer 和按钮，所以它自己也必须是 flex 行；
+   而且必须 flex:1——不写的话它按内容宽度收缩成 97px，标题一行、按钮被挤到第二行，
+   在界面上就是一坨竖着堆起来的小方块而不是一条横栏。 */
+.notes-head{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:7px}
+.notes-title{font-size:11.5px;font-weight:650;letter-spacing:.05em;
+             text-transform:uppercase;color:var(--text-3);white-space:nowrap}
+.notes .count{font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-3);
+              background:var(--surface-2);border-radius:20px;padding:1px 7px}
+
+/* 便签所在的整页覆盖层。fixed + 视口坐标；便签本身被 noteArea() 夹在中栏右侧的
+   便签道里，所以坐标仍然是视口坐标，但摆不到侧栏上去。 */
+.notes-layer{
+  position:fixed;inset:0;pointer-events:none;z-index:40;
+}
+.notes-layer.hidden{display:none}
+
+/* 一张便签 */
+.note{
+  position:absolute;pointer-events:auto;display:flex;flex-direction:column;
+  background:var(--note-bg);border:1px solid var(--note-line);border-radius:11px;
+  box-shadow:var(--shadow-2);
+  overflow:hidden;transition:box-shadow .14s,border-color .14s;
+  /* 整张便签都是抓手，所以整张都要禁止浏览器的原生触摸手势——
+     不写这条，触屏/触摸板上按下拖动会被浏览器当成滚动页面，便签纹丝不动。
+     鼠标拖拽也有一个副作用要挡：正文是 contentEditable，按住会把文字选中。 */
+  touch-action:none;cursor:grab;
+  /* 便签再高也不能高过窗口：参考条挂多了会把便签撑到屏幕外，底部那些按钮就再也点不到。
+     正文区本来就可以滚动，所以封顶不会丢内容。 */
+  max-height:calc(100vh - 96px);
+}
+.note:active{cursor:grabbing}
+/* 控件自己恢复成正常光标与默认触摸行为，否则按钮上也是"抓手"看着很怪 */
+.note button,.note-resize,.note-topic{cursor:auto}
+.note-topic{cursor:text}
+.note-resize{cursor:nwse-resize}
+.note:hover{box-shadow:var(--shadow-3)}
+.note.active{border-color:var(--accent-line);
+             box-shadow:var(--shadow-accent)}
+.note.done{background:var(--note-bg-done);border-color:var(--note-line-done)}
+.note.done .note-topic{text-decoration:line-through;
+                       text-decoration-color:var(--text-4);color:var(--text-3)}
+/* 顶条按类型着色：一眼扫出哪张是要求、哪张是承诺 */
+.note-band{height:3px;flex:none;background:var(--line-strong)}
+.note[data-kind=topic]  .note-band{background:var(--dec)}
+.note[data-kind=confirm] .note-band{background:var(--req)}
+.note[data-kind=report] .note-band{background:var(--com)}
+.note[data-kind=followup] .note-band{background:var(--agr)}
+.note[data-kind=risk]   .note-band{background:var(--risk)}
+.note-head{
+  display:flex;align-items:center;gap:5px;padding:6px 8px 3px;
+  cursor:grab;user-select:none;flex:none;
+}
+.note-head:active{cursor:grabbing}
+.note-grip{color:var(--text-4);font-size:11px;letter-spacing:-1px;flex:none}
+.note-head .spacer{flex:1}
+.note-x{border:0;background:none;cursor:pointer;color:var(--text-4);font-size:14px;
+        line-height:1;padding:0 3px;border-radius:4px;flex:none}
+.note-x:hover{background:var(--risk-bg);color:var(--risk)}
+.note-body{padding:0 10px 9px;overflow-y:auto;flex:1;min-height:0}
+.note-topic{
+  font-size:13.5px;line-height:1.5;font-weight:550;color:var(--text);
+  outline:none;border-radius:4px;padding:1px 2px;margin:0 -2px;cursor:text;
+}
+.note-topic:focus{background:var(--surface);box-shadow:0 0 0 2px var(--accent-line)}
+.note-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;font-size:11px;
+           color:var(--text-3)}
+.note-from{
+  margin-top:5px;font-size:11px;color:var(--text-3);line-height:1.5;
+  padding-left:7px;border-left:2px solid var(--note-quote);cursor:pointer;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+}
+.note-from:hover{color:var(--text-2)}
+.note-refs{margin-top:6px;display:flex;flex-direction:column;gap:3px}
+.note-refs-h{font-size:9.5px;font-weight:650;letter-spacing:.05em;
+             text-transform:uppercase;color:var(--text-4)}
+.note-ref{
+  position:relative;background:var(--note-inner);border:1px solid var(--note-inner-line);border-radius:6px;
+  padding:4px 18px 4px 6px;
+}
+.note-ref-t{font-size:11px;font-weight:600;color:var(--accent);line-height:1.35;
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.note-ref-x{font-size:10.5px;color:var(--text-3);line-height:1.45;
+            display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+            overflow:hidden}
+.note-ref-rm{position:absolute;right:1px;top:1px;border:0;background:none;
+             cursor:pointer;color:var(--text-4);font-size:12px;line-height:1;
+             padding:1px 3px;border-radius:3px}
+.note-ref-rm:hover{background:var(--risk-bg);color:var(--risk)}
+/* 拖参考时的落点高亮 */
+.note.refdrop{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+/* 右下角缩放柄 */
+.note-resize{
+  position:absolute;right:0;bottom:0;width:15px;height:15px;cursor:nwse-resize;
+  background:linear-gradient(135deg,transparent 52%,var(--line-strong) 52%,
+             var(--line-strong) 62%,transparent 62%,transparent 72%,
+             var(--line-strong) 72%,var(--line-strong) 82%,transparent 82%);
+  opacity:0;transition:opacity .13s;
+}
+.note:hover .note-resize{opacity:.75}
+.note-empty{
+  /* fixed 层里的居中：left 由 renderNotes 按**中栏**的中心算出并写进 style，
+     不能用 left:50%——那是视口中心，在 1680 宽下比中栏中心偏右 78px，会压到右栏上。
+     背景也必须走令牌：写死白色在暗色主题下就是一个刺眼的白框。 */
+  position:fixed;transform:translateX(-50%);top:120px;
+  padding:14px 18px;border-radius:var(--radius);
+  background:var(--note-bg);border:1px dashed var(--note-line);
+  font-size:12.5px;color:var(--text-3);line-height:1.8;max-width:460px;
+  box-shadow:var(--shadow-2);text-align:center;
+}
+
+/* 拖拽时的浮动提示（统一指针拖拽用，替代 HTML5 拖影） */
+.drag-ghost{
+  position:fixed;pointer-events:none;z-index:70;max-width:320px;
+  background:var(--text);color:var(--on-accent);font-size:12px;line-height:1.5;
+  padding:6px 11px;border-radius:7px;
+  box-shadow:var(--shadow-ghost);
+}
+.drag-ghost small{display:block;opacity:.7;font-size:10.5px;margin-top:1px}
+/* 被拖的源元素 */
+.utt.dragging{opacity:.4}
+.res.dragging,.ref.dragging{opacity:.4}
+
+/* ── 中栏：发言流 ─────────────────────────────────────────────────── */
+.feed{padding:6px 0 40px}
+.utt{
+  display:grid;grid-template-columns:54px minmax(0,1fr);gap:0;
+  padding:9px 20px 9px 12px;position:relative;
+  border-bottom:1px solid transparent;transition:background .13s;
+}
+.utt:hover{background:var(--hover-veil)}
+.utt.sel{background:var(--surface);box-shadow:inset 2px 0 0 var(--accent)}
+.utt.open .u-text{opacity:.72}
+.u-time{
+  font-family:var(--mono);font-size:11px;color:var(--text-3);
+  padding-top:3px;font-variant-numeric:tabular-nums;user-select:none;
+  display:flex;flex-direction:column;gap:2px;
+}
+/* 拖拽柄只占时间列里的一小格，不整行 draggable。
+   整行 draggable 会让这段文字**无法选中复制**——而"能抄下原话"是会议记录的硬需求，
+   不能用它换一次拖拽便利。 */
+.u-grip{
+  font-size:11px;line-height:1;color:var(--text-4);cursor:grab;
+  opacity:0;transition:opacity .12s;user-select:none;letter-spacing:-1px;
+  padding:1px 0;
+}
+.utt:hover .u-grip{opacity:1}
+.u-grip:active{cursor:grabbing}
+.u-body{min-width:0}
+.u-who{
+  font-size:11.5px;font-weight:600;margin-bottom:2px;
+  display:inline-flex;align-items:center;gap:5px;
+}
+.u-text{
+  font-size:15.5px;line-height:1.85;color:var(--text);
+  word-break:break-word;transition:opacity .3s;
+}
+.u-badges{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap}
+/* 不同类型用不同颜色：一条 3px 的左条把"这段里有甲方要求/有承诺/有节点"标出来，
+   不需要读文字。用户的原话是"不一定要分类标签，同类的就同一种颜色就行了"。 */
+.utt::before{
+  content:"";position:absolute;left:4px;top:10px;bottom:10px;width:2.5px;
+  border-radius:2px;background:transparent;transition:background .2s;
+}
+.utt[data-tone=req]::before{background:var(--req)}
+.utt[data-tone=com]::before{background:var(--com)}
+.utt[data-tone=date]::before{background:var(--date)}
+.utt[data-tone=risk]::before{background:var(--risk)}
+.utt[data-tone=agr]::before{background:var(--agr)}
+.utt[data-tone=clause]::before{background:var(--clause)}
+.utt[data-tone=dec]::before{background:var(--dec)}
+.utt[data-tone=term]::before{background:var(--term)}
+.utt[data-tone=who]::before{background:var(--who)}
+.utt[data-tone=org]::before{background:var(--org)}
+/* 声纹绑好名字之后，左侧这道色条改成**说话人的颜色**——同一个人说话就是同一个颜色，
+   一眼能看出"这几句都是谁"。用户要的就是这个："用相同颜色表示同一个人的发言"。
+   写在 tone 规则**后面**并且多一个 [data-tone] 提一格特异性，否则会被上面那些盖住。 */
+.utt.has-spk[data-tone]::before{background:var(--utt-bar,var(--term))}
+/* 声纹提示：同一段声音还有几句没署名。点一下会一起改，所以要先说清楚。 */
+.u-spk{
+  font-size:10.5px;color:var(--text-3);background:var(--surface-2);
+  border:1px solid var(--line);border-radius:20px;padding:0 6px;margin-left:5px;
+  white-space:nowrap;
+}
+/* 跨会声纹库的建议："听起来像 林浩然 0.82"。**只建议，不改名**——
+   认错人在会议里代价很高（把甲方的话记到我方名下，比"未署名"糟得多）。 */
+.u-sug{
+  display:inline-flex;align-items:center;gap:5px;margin-left:6px;
+  font-size:10.5px;color:var(--accent);background:var(--accent-soft);
+  border:1px solid var(--accent-line);border-radius:20px;padding:0 6px;white-space:nowrap;
+}
+.u-sug button{
+  font:inherit;font-size:10.5px;cursor:pointer;border:0;background:none;
+  color:var(--accent);padding:0 2px;border-radius:3px;
+}
+.u-sug button:hover{background:var(--accent);color:var(--on-accent)}
+.u-sug .no{color:var(--text-3)}
+.u-sug .no:hover{background:var(--surface-3);color:var(--text)}
+.u-who{cursor:pointer}
+.u-who:hover{text-decoration:underline}
+.badge{
+  font-size:10.5px;line-height:16px;padding:0 6px;border-radius:4px;
+  border:1px solid;font-weight:500;cursor:pointer;transition:filter .12s;
+}
+.badge:hover{filter:brightness(.96)}
+.badge.req{color:var(--req);border-color:var(--req-line);background:var(--req-bg)}
+.badge.com{color:var(--com);border-color:var(--com-line);background:var(--com-bg)}
+.badge.date{color:var(--date);border-color:var(--date-line);background:var(--date-bg)}
+.badge.risk{color:var(--risk);border-color:var(--risk-line);background:var(--risk-bg)}
+.badge.agr{color:var(--agr);border-color:var(--agr-line);background:var(--agr-bg)}
+.badge.clause{color:var(--clause);border-color:var(--clause-line);background:var(--clause-bg)}
+.badge.dec{color:var(--dec);border-color:var(--dec-line);background:var(--dec-bg)}
+.badge.term{color:var(--term);border-color:var(--term-line);background:var(--term-bg)}
+.badge.who{color:var(--who);border-color:var(--who-line);background:var(--who-bg)}
+.badge.org{color:var(--org);border-color:var(--org-line);background:var(--org-bg)}
+
+/* 关键词热区：下划线而非底色块。底色块在整段文字里会碎片化阅读节奏，
+   下划线能标出词又不打断句子。 */
+.kw{
+  border-bottom:1.5px solid var(--date-line);cursor:help;
+  transition:background .12s,border-color .12s;border-radius:2px 2px 0 0;
+  padding-bottom:.5px;
+}
+.kw:hover{background:var(--date-bg);border-bottom-color:var(--date)}
+.kw.on{background:var(--accent-soft);border-bottom-color:var(--accent)}
+
+/* 修订中：右侧一个极细的进度条，表示这句还可能变 */
+.utt .rev{
+  position:absolute;right:20px;top:14px;width:3px;height:12px;border-radius:2px;
+  background:var(--accent);opacity:0;transition:opacity .3s;
+}
+.utt.open .rev{opacity:.35;animation:pulse 1.6s ease-in-out infinite}
+
+/* ── 右栏：线索 ───────────────────────────────────────────────────── */
+.filters{display:flex;gap:4px;flex-wrap:wrap;padding:8px 10px;
+         border-bottom:1px solid var(--line);flex:none}
+.fchip{
+  font-size:11.5px;padding:2px 8px;border-radius:20px;cursor:pointer;
+  border:1px solid var(--line);background:var(--surface);color:var(--text-2);
+  transition:all .12s;user-select:none;
+}
+.fchip:hover{border-color:var(--line-strong)}
+.fchip.on{background:var(--text);border-color:var(--text);color:var(--on-accent)}
+.fchip .n{opacity:.6;font-variant-numeric:tabular-nums;margin-left:3px}
+/* 颜色点：同色即同类，不需要读文字 */
+.fdot{
+  width:9px;height:9px;border-radius:50%;display:inline-block;flex:none;
+  background:var(--line-strong);
+}
+.fdot[data-tone=all]{background:conic-gradient(var(--req),var(--date),var(--com),var(--dec),var(--req))}
+.fdot[data-tone=req]{background:var(--req)}
+.fdot[data-tone=com]{background:var(--com)}
+.fdot[data-tone=date]{background:var(--date)}
+.fdot[data-tone=risk]{background:var(--risk)}
+.fdot[data-tone=agr]{background:var(--agr)}
+.fdot[data-tone=clause]{background:var(--clause)}
+.fdot[data-tone=dec]{background:var(--dec)}
+.fdot[data-tone=term]{background:var(--term)}
+.fdot[data-tone=who]{background:var(--who)}
+.fdot[data-tone=org]{background:var(--org)}
+.fchip{display:inline-flex;align-items:center;gap:5px}
+.fchip.on .fdot{box-shadow:0 0 0 2px var(--bg)}
+
+.clue{
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+  padding:10px 11px 10px 12px;margin-bottom:8px;cursor:pointer;
+  transition:border-color .13s,box-shadow .13s,transform .13s;position:relative;
+  border-left:3px solid var(--line-strong);
+}
+.clue:hover{border-color:var(--line-strong);box-shadow:var(--shadow-1)}
+.clue.sel{border-color:var(--accent-line);box-shadow:0 0 0 3px var(--accent-soft)}
+.clue.pinned{background:var(--note-bg)}
+.clue[data-tone=req]{border-left-color:var(--req)}
+.clue[data-tone=com]{border-left-color:var(--com)}
+.clue[data-tone=date]{border-left-color:var(--date)}
+.clue[data-tone=risk]{border-left-color:var(--risk)}
+.clue[data-tone=agr]{border-left-color:var(--agr)}
+.clue[data-tone=clause]{border-left-color:var(--clause)}
+.clue[data-tone=dec]{border-left-color:var(--dec)}
+.clue[data-tone=term]{border-left-color:var(--term)}
+.clue[data-tone=who]{border-left-color:var(--who)}
+.clue[data-tone=org]{border-left-color:var(--org)}
+.c-top{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+.c-kind{
+  font-size:10.5px;font-weight:650;letter-spacing:.02em;padding:1px 6px;
+  border-radius:4px;border:1px solid;
+}
+.c-time{font-family:var(--mono);font-size:10.5px;color:var(--text-3);
+        font-variant-numeric:tabular-nums}
+.c-conf{margin-left:auto;font-size:10px;color:var(--text-3);display:flex;
+        align-items:center;gap:4px}
+.c-bar{width:26px;height:3px;border-radius:2px;background:var(--surface-3);
+       overflow:hidden}
+.c-bar i{display:block;height:100%;background:var(--text-3)}
+.c-text{font-size:13.5px;line-height:1.6;color:var(--text);word-break:break-word}
+.c-src{
+  margin-top:6px;font-size:11.5px;color:var(--text-3);line-height:1.5;
+  padding-left:8px;border-left:2px solid var(--surface-3);
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+}
+.c-src mark{background:var(--date-bg);color:inherit;border-radius:2px}
+.c-acts{display:flex;gap:6px;margin-top:7px;opacity:0;transition:opacity .13s}
+.clue:hover .c-acts,.clue.sel .c-acts{opacity:1}
+.c-act{
+  font-size:11px;padding:1px 7px;border-radius:5px;cursor:pointer;
+  border:1px solid var(--line);background:var(--surface);color:var(--text-2);
+}
+.c-act:hover{border-color:var(--line-strong);background:var(--surface-2)}
+.c-act.danger:hover{color:var(--risk);border-color:var(--risk-line);background:var(--risk-bg)}
+
+/* ── 详情面板（点击线索/关键词后出现）────────────────────────────── */
+.detail{
+  border-top:1px solid var(--line);background:var(--surface-2);
+  flex:none;max-height:52%;overflow-y:auto;
+  animation:slideUp .2s cubic-bezier(.4,0,.2,1);
+}
+@keyframes slideUp{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+.d-head{
+  display:flex;align-items:center;gap:8px;padding:10px 12px;
+  border-bottom:1px solid var(--line);position:sticky;top:0;
+  background:var(--surface-2);z-index:2;
+}
+.d-head h3{margin:0;font-size:12.5px;font-weight:650}
+.d-close{margin-left:auto;border:0;background:none;cursor:pointer;color:var(--text-3);
+         font-size:17px;line-height:1;padding:2px 6px;border-radius:5px}
+.d-close:hover{background:var(--surface-3);color:var(--text)}
+.d-body{padding:10px 12px 14px}
+.d-sec{margin-bottom:12px}
+.d-sec:last-child{margin-bottom:0}
+.d-label{
+  font-size:10.5px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--text-3);margin-bottom:5px;
+}
+.d-quote{
+  font-size:13.5px;line-height:1.75;padding:9px 11px;border-radius:var(--radius-sm);
+  background:var(--surface);border:1px solid var(--line);
+}
+.d-quote mark{background:var(--date-bg);border-bottom:1.5px solid var(--date);
+              border-radius:2px;padding:0 1px}
+.ref{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);
+  padding:9px 11px;margin-bottom:6px;
+}
+.ref:last-child{margin-bottom:0}
+.ref-h{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;margin-bottom:3px}
+.ref-t{font-size:12.5px;font-weight:600;color:var(--accent)}
+.ref-l{font-size:10.5px;color:var(--text-3);border:1px solid var(--line);
+       border-radius:4px;padding:0 5px}
+.ref-s{font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.ref-pin{
+  margin-left:auto;font:inherit;font-size:11px;padding:1px 8px;border-radius:20px;
+  border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--accent);
+  cursor:pointer;flex:none;
+}
+.ref-pin:hover{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.ref-x{font-size:12.5px;line-height:1.65;color:var(--text-2)}
+.ref-x mark{background:var(--date-bg);border-radius:2px}
+
+.empty{
+  text-align:center;color:var(--text-3);font-size:13px;padding:34px 20px;line-height:1.8;
+}
+.empty b{display:block;color:var(--text-2);font-size:13.5px;font-weight:600;
+         margin-bottom:4px}
+.hint{font-size:11.5px;color:var(--text-3);padding:6px 12px;line-height:1.6}
+
+/* ── 悬浮卡（关键词 hover 摘要）───────────────────────────────────── */
+/* ── Markdown 渲染（佐证面板 / 悬浮框）─────────────────────────────────
+   语料库里全是 Markdown 文档，原来直接贴源码，屏幕上满是 `###`、``` 围栏、
+   `| a | b |` 表格行——用户说"显示的都还是编辑状态的形式，阅读体验非常糟糕"。
+   这些规则把 mdRender() 产出的结构排成可读的样子。 */
+.md-p{margin:3px 0;line-height:1.65}
+.md-h{font-weight:650;color:var(--text);margin:6px 0 2px}
+.md-h1,.md-h2{font-size:13px}
+.md-h3,.md-h4,.md-h5,.md-h6{font-size:12px;color:var(--text-2)}
+.md-pre{font-family:var(--mono);font-size:11px;line-height:1.5;color:var(--text-2);
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-sm);
+  padding:6px 8px;margin:4px 0;overflow-x:auto;white-space:pre}
+.md-code{font-family:var(--mono);font-size:11px;background:var(--surface-2);
+  border-radius:3px;padding:0 3px}
+.md-tbl{border-collapse:collapse;margin:4px 0;font-size:11.5px}
+.md-tbl th,.md-tbl td{border:1px solid var(--line);padding:2px 6px;text-align:left;
+  color:var(--text-2);vertical-align:top}
+.md-tbl th{color:var(--text-3);font-weight:600;background:var(--surface-2)}
+.md-ul{margin:3px 0 3px 16px;padding:0}
+.md-ul li{margin:1px 0}
+.md-q{border-left:2px solid var(--line-strong);padding-left:7px;color:var(--text-3);margin:4px 0}
+.md-hr{border:0;border-top:1px solid var(--line);margin:6px 0}
+.md-wl{color:var(--accent)}
+
+#pop{
+  position:fixed;z-index:60;width:340px;display:none;
+  background:var(--surface);border:1px solid var(--line-strong);
+  border-radius:var(--radius);box-shadow:var(--shadow-pop);
+  padding:10px 12px;font-size:12.5px;line-height:1.6;
+  animation:popIn .13s cubic-bezier(.4,0,.2,1);
+}
+@keyframes popIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+#pop .ph{display:flex;align-items:baseline;gap:7px;margin-bottom:7px}
+#pop .pt{font-weight:650;font-size:12.5px;color:var(--text)}
+#pop .pm{margin-left:auto;font-size:10.5px;color:var(--text-3);
+         font-family:var(--mono)}
+#pop .prow{padding:7px 0;border-top:1px solid var(--line)}
+#pop .prow:first-of-type{border-top:0;padding-top:0}
+#pop .prt{font-size:12px;font-weight:600;color:var(--accent);margin-bottom:2px}
+#pop .prx{font-size:12px;color:var(--text-2);line-height:1.6;
+          display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+          overflow:hidden}
+#pop .prx mark{background:var(--date-bg);border-radius:2px}
+#pop .psrc{font-size:12px;font-weight:600;color:var(--text)}
+#pop .plab{font-size:10.5px;font-weight:500;color:var(--text-3);margin-left:5px;
+  border:1px solid var(--line);border-radius:3px;padding:0 4px}
+#pop .pcrumb{font-size:11px;color:var(--text-3);margin:1px 0 4px}
+/* 逐字原文：左边一道竖线，读起来是"引用"而不是"搜索结果" */
+#pop .pq{font-size:12px;color:var(--text-2);line-height:1.6;white-space:pre-wrap;
+  border-left:2px solid var(--line-strong);padding:1px 0 1px 7px;margin:4px 0}
+#pop .pfoot{margin-top:7px;padding-top:6px;border-top:1px solid var(--line);
+            font-size:10.5px;color:var(--text-3);text-align:right}
+
+/* ── 搜索 ─────────────────────────────────────────────────────────── */
+#search{
+  position:fixed;inset:0;background:rgba(17,24,39,.32);z-index:80;
+  display:none;align-items:flex-start;justify-content:center;padding-top:12vh;
+  backdrop-filter:blur(2px);
+}
+#search.on{display:flex}
+.s-box{
+  width:min(660px,92vw);background:var(--surface);border-radius:14px;
+  box-shadow:0 24px 64px -12px rgba(17,24,39,.4);overflow:hidden;
+  animation:popIn .16s cubic-bezier(.4,0,.2,1);
+}
+.s-in{
+  width:100%;border:0;border-bottom:1px solid var(--line);font:inherit;
+  font-size:15px;padding:15px 18px;background:none;color:var(--text);
+}
+.s-in:focus{outline:none}
+.s-res{max-height:52vh;overflow-y:auto;padding:6px}
+.s-row{padding:9px 12px;border-radius:var(--radius-sm);cursor:pointer}
+.s-row:hover,.s-row.on{background:var(--accent-soft)}
+.s-rt{font-size:12px;color:var(--accent);font-weight:600;margin-bottom:2px}
+.s-rx{font-size:13px;color:var(--text-2);line-height:1.6;
+      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+      overflow:hidden}
+.s-rx mark{background:var(--date-bg);border-radius:2px}
+.s-foot{padding:8px 14px;border-top:1px solid var(--line);font-size:11px;
+        color:var(--text-3);display:flex;gap:12px}
+
+/* ── 设置 / 导入 / 发言计划 ───────────────────────────────────────── */
+/* 覆盖层而不是嵌入某一栏：ASR、检索、大模型是三件互不相干的事，塞进任何一栏
+   都会读成"它属于那一栏"。左轨分节，右侧只画当前一节——五节平铺会变成一堵墙。
+
+   三个面板共用这一条规则。发言计划编辑器第一次写的时候**漏掉了自己的选择器**，
+   于是它没有任何覆盖层样式：没有 position:fixed、没有 display:none，就变成一个
+   普通 div 待在文档流里，永远显示、把 main 挤成一条。界面"乱"的根因就是这个——
+   一个面板漏了一条选择器，整个页面跟着塌。所以四个 id（设置 / 导入 / 使用引导）
+   写在同一个地方，加第五个面板时只要照着这一行抄就不会漏。 */
+#settings,#imp,#guide{
+  position:fixed;inset:0;background:rgba(17,24,39,.42);z-index:85;
+  display:none;align-items:center;justify-content:center;padding:4vh 4vw;
+  backdrop-filter:blur(2px);
+}
+#settings.on,#imp.on,#guide.on{display:flex}
+/* 引导这一层**不压暗页面**：它要指的就是页面本身，压暗 + 模糊之后那圈强调环也跟着
+   灰掉、糊掉，"看这里"就没了。只留一层透明的全屏层——它的用处是接住"点外面 = 关掉"，
+   顺便挡住误点。卡片自己带边框和阴影，浮在真界面之上反而更像"指给你看"。 */
+#guide{background:none;backdrop-filter:none;padding:0}
+.st-box{
+  width:min(880px,94vw);height:min(640px,88vh);background:var(--surface);
+  border-radius:14px;box-shadow:var(--shadow-3);display:flex;overflow:hidden;
+  animation:popIn .16s cubic-bezier(.4,0,.2,1);
+}
+.imp-box{width:min(560px,92vw);height:auto;max-height:86vh;flex-direction:column}
+.st-rail{
+  width:172px;flex:0 0 auto;background:var(--surface-2);border-right:1px solid var(--line);
+  padding:14px 10px;display:flex;flex-direction:column;gap:1px;
+}
+.st-rail h3{
+  margin:0;padding:0 8px 10px;font-size:11.5px;font-weight:600;
+  color:var(--text-3);letter-spacing:.06em;
+}
+.st-tab{
+  font:inherit;font-size:13px;text-align:left;cursor:pointer;width:100%;
+  border:0;background:none;color:var(--text-2);padding:8px 10px;
+  border-radius:var(--radius-sm);display:flex;align-items:center;gap:8px;
+}
+.st-tab:hover{background:var(--hover-veil);color:var(--text)}
+.st-tab.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.st-dot{width:7px;height:7px;border-radius:50%;background:var(--text-4);flex:0 0 auto}
+.st-dot.ok{background:var(--ok-ink)}
+.st-dot.bad{background:var(--risk)}
+.st-pane{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
+.st-head{
+  display:flex;align-items:center;gap:10px;padding:15px 20px 12px;
+  border-bottom:1px solid var(--line);
+}
+.st-head h2{margin:0;font-size:15px;font-weight:600}
+.st-sub{font-size:12px;color:var(--text-3)}
+.st-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 20px 20px}
+.st-row{
+  padding:13px 0;border-bottom:1px solid var(--line);
+  display:grid;grid-template-columns:186px minmax(0,1fr);gap:4px 16px;align-items:start;
+}
+.st-row:last-child{border-bottom:0}
+.st-lab{font-size:13px;font-weight:500;padding-top:7px;color:var(--text)}
+.st-hint{grid-column:2;font-size:11.5px;line-height:1.65;color:var(--text-3);margin-top:3px}
+.st-in{
+  width:100%;font:inherit;font-size:13px;padding:7px 10px;
+  border-radius:var(--radius-sm);border:1px solid var(--line-strong);
+  background:var(--surface-2);color:var(--text);
+}
+.st-in:focus{outline:none;border-color:var(--accent-line);box-shadow:var(--shadow-accent)}
+.st-in.dirty{border-color:var(--accent-line);background:var(--accent-soft)}
+select.st-in{cursor:pointer}
+.st-chk{display:flex;align-items:center;gap:8px;padding-top:8px;font-size:13px;color:var(--text-2)}
+.st-chk input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+.st-tag{
+  font-size:11px;padding:1px 8px;border-radius:999px;white-space:nowrap;
+  border:1px solid var(--line);background:var(--surface-2);color:var(--text-3);
+}
+.st-tag.ok{color:var(--ok-ink);border-color:var(--ok-soft);background:var(--ok-soft)}
+.st-tag.bad{color:var(--risk);border-color:var(--risk-line);background:var(--risk-bg)}
+.st-note{
+  margin:6px 0 12px;padding:11px 13px;border-radius:var(--radius-sm);
+  border:1px solid var(--line);background:var(--surface-2);
+  font-size:12px;line-height:1.75;color:var(--text-2);
+}
+.st-note b{color:var(--text)}
+.st-note.warn{border-color:var(--date-line);background:var(--date-bg);color:var(--date)}
+.st-note.warn b{color:var(--date)}
+.st-kv{font-family:var(--mono);font-size:11.5px;line-height:1.9;color:var(--text-2);word-break:break-all}
+.st-kv i{font-style:normal;display:inline-block;min-width:110px;color:var(--text-3);
+         font-family:var(--sans);font-size:12px}
+.st-opt{
+  display:flex;gap:10px;align-items:flex-start;padding:9px 11px;cursor:pointer;
+  border:1px solid var(--line);border-radius:var(--radius-sm);margin-bottom:6px;
+  transition:border-color .13s,background .13s;
+}
+.st-opt:hover{background:var(--surface-2)}
+.st-opt.on{border-color:var(--accent-line);background:var(--accent-soft)}
+.st-opt input{margin-top:3px;accent-color:var(--accent);cursor:pointer;flex:0 0 auto}
+.st-opt-t{font-size:13px;font-weight:500;color:var(--text)}
+.st-opt-h{font-size:11.5px;line-height:1.6;color:var(--text-3);margin-top:2px}
+.st-foot{
+  flex:0 0 auto;padding:12px 20px;border-top:1px solid var(--line);
+  background:var(--surface-2);display:flex;align-items:center;gap:10px;
+}
+.st-msg{flex:1 1 auto;min-width:0;font-size:12px;color:var(--text-3)}
+.st-msg.ok{color:var(--ok-ink)}
+.st-msg.bad{color:var(--risk)}
+
+/* ── 使用引导（首次打开自动出现一次）──────────────────────────────── */
+/* 只讲"这块是干什么的、我该点哪里"。每一步给目标控件加一圈强调环（.g-hl），
+   而不是挖一个高亮洞：洞要跟着布局重算坐标，窗口一缩、栏一折叠，洞就跑到别的地方
+   去了；环不参与布局，加在哪都只是画一圈线。这一层也不压暗页面（见上面的
+   #guide 覆盖），否则页面连同环一起变灰，"看这里"就没了。 */
+.g-box{
+  width:min(660px,94vw);height:auto;max-height:88vh;background:var(--surface);
+  border:1px solid var(--line-strong);border-radius:14px;box-shadow:var(--shadow-3);
+  display:flex;flex-direction:column;overflow:hidden;
+  animation:popIn .16s cubic-bezier(.4,0,.2,1);
+}
+.g-head{
+  flex:0 0 auto;display:flex;align-items:center;gap:10px;
+  padding:15px 20px 12px;border-bottom:1px solid var(--line);
+}
+.g-head h2{margin:0;font-size:15px;font-weight:600}
+.g-count{font-size:11.5px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.g-body{
+  flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px 20px 18px;
+  display:flex;flex-direction:column;gap:9px;
+}
+.g-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--text)}
+.g-num{
+  flex:0 0 auto;width:20px;height:20px;border-radius:50%;font-size:11.5px;font-weight:600;
+  background:var(--accent-soft);color:var(--accent);
+  display:flex;align-items:center;justify-content:center;
+}
+.g-text{font-size:13px;line-height:1.8;color:var(--text-2)}
+.g-text b{color:var(--text)}
+.g-where{
+  font-size:12px;line-height:1.7;color:var(--text-3);
+  border-left:2px solid var(--line-strong);padding-left:9px;margin-top:2px;
+}
+.g-keys{font-size:11.5px;line-height:2.1;color:var(--text-3)}
+.g-keys b{color:var(--text-2);font-weight:500;display:inline-block;min-width:82px}
+.g-foot{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:12px 20px;
+  border-top:1px solid var(--line);background:var(--surface-2);
+}
+.g-foot .g-once{font-size:11.5px;color:var(--text-3)}
+/* 强调环。用 outline 而不是 box-shadow：outline 不参与布局、不改变元素尺寸，
+   所以给顶栏按钮或整栏加环都不会把界面挤动一像素。 */
+.g-hl{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px;
+      animation:gRing 1.8s ease-in-out infinite}
+@keyframes gRing{0%,100%{outline-color:var(--accent)}50%{outline-color:var(--accent-soft)}}
+
+/* 便签里的标签点：五色小圆点，点一下就换类别。
+   没有弹窗、没有循环点击——用户说过"同类的就同一种颜色就行了"，
+   所以便签上只给颜色，名称放在 title 里。 */
+.note-dots{display:flex;align-items:center;gap:5px;flex:none;margin-left:2px}
+.note-dot{
+  width:11px;height:11px;border-radius:50%;border:0;padding:0;cursor:pointer;
+  background:var(--text-4);flex:none;transition:transform .1s;
+}
+.note-dot:hover{transform:scale(1.25)}
+.note-dot.on{box-shadow:0 0 0 2px var(--surface),0 0 0 3.5px currentColor}
+/* 顶部入口条里的"写一条要点"输入框 */
+.notes-input{
+  font:inherit;font-size:12.5px;flex:1 1 auto;min-width:120px;max-width:340px;
+  padding:5px 9px;border-radius:var(--radius-sm);
+  border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);
+}
+.notes-input:focus{outline:none;border-color:var(--accent-line);
+                   box-shadow:0 0 0 3px var(--accent-soft)}
+.notes-input::placeholder{color:var(--text-3)}
+
+/* ── 提示条 ───────────────────────────────────────────────────────── */
+#toast{
+  position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(12px);
+  background:var(--text);color:var(--on-accent);font-size:13px;padding:9px 16px;
+  border-radius:8px;opacity:0;transition:opacity .2s,transform .2s;z-index:90;
+  pointer-events:none;box-shadow:0 8px 24px -6px rgba(0,0,0,.35);
+}
+#toast.on{opacity:1;transform:translateX(-50%)}
+
+/* 窄屏策略：不做覆盖层。覆盖层要处理点外部关闭、Esc、焦点陷阱、滚动锁定，
+   而这块界面的真实场景是一台 14–16 寸笔记本全屏——三栏在 1100px 上仍放得下
+   （224 + 546 + 330）。只在更窄时收起侧栏，由用户显式打开。
+
+   两套类名（宽屏用 hide-*、窄屏用 show-*）看着重复，但它们是不同的默认值：
+   宽屏默认都显示，窄屏默认都隐藏。用一套表达不了，硬凑会让 CSS 变成猜谜。
+   每一档都显式写出"可见性"，因为只改列宽会留下一条 0 宽但有内容的缝——
+   审计在 1100px 上抓到过：栏宽 1px，内容撑出 82px 溢出。 */
+@media (max-width:1500px){
+  main{grid-template-columns:236px minmax(0,1fr) 360px}
+  main.hide-left{grid-template-columns:0 minmax(0,1fr) 360px}
+  main.hide-right{grid-template-columns:236px minmax(0,1fr) 0}
+  main.hide-left.hide-right{grid-template-columns:0 minmax(0,1fr) 0}
+}
+@media (max-width:1240px){
+  main{grid-template-columns:224px minmax(0,1fr) 330px}
+  main.hide-left{grid-template-columns:0 minmax(0,1fr) 330px}
+  main.hide-right{grid-template-columns:224px minmax(0,1fr) 0}
+  main.hide-left.hide-right{grid-template-columns:0 minmax(0,1fr) 0}
+}
+@media (max-width:1060px){
+  /* 默认只留中栏。这一行不能省——上一档是 224px/1fr/330px，不覆盖的话
+     折叠掉侧栏后中栏仍然只有 1fr 的份额，而侧栏的两条轨道还占着宽度。 */
+  main{grid-template-columns:0 minmax(0,1fr) 0}
+  main #col-left,main #col-right{display:none}
+  main.show-left{grid-template-columns:240px minmax(0,1fr) 0}
+  main.show-left #col-left{display:flex}
+  main.show-right{grid-template-columns:0 minmax(0,1fr) 330px}
+  main.show-right #col-right{display:flex}
+  main.show-left.show-right{grid-template-columns:220px minmax(0,1fr) 300px}
+  main.show-left.show-right #col-left,main.show-left.show-right #col-right{display:flex}
+}
+</style>
+<style type="text/css">.vc-checkerboard{background-size:contain;bottom:0;left:0;position:absolute;right:0;top:0}</style><style type="text/css">.vc-alpha,.vc-alpha-checkboard-wrap{bottom:0;left:0;position:absolute;right:0;top:0}.vc-alpha-checkboard-wrap{overflow:hidden}.vc-alpha-gradient{bottom:0;left:0;position:absolute;right:0;top:0}.vc-alpha-container{cursor:pointer;height:100%;margin:0 3px;position:relative;z-index:2}.vc-alpha-pointer{position:absolute;z-index:2}.vc-alpha-picker{background:#fff;border-radius:1px;box-shadow:0 0 2px rgba(0,0,0,.6);cursor:pointer;height:8px;margin-top:1px;transform:translateX(-2px);width:4px}</style><style type="text/css">.vc-editable-input{position:relative}.vc-input__input{border:0;outline:none;padding:0}.vc-input__label{text-transform:capitalize}</style><style type="text/css">.vc-saturation,.vc-saturation--black,.vc-saturation--white{bottom:0;cursor:pointer;left:0;position:absolute;right:0;top:0}.vc-saturation--white{background:linear-gradient(90deg,#fff,hsla(0,0%,100%,0))}.vc-saturation--black{background:linear-gradient(0deg,#000,transparent)}.vc-saturation-pointer{cursor:pointer;position:absolute}.vc-saturation-circle{border-radius:50%;box-shadow:0 0 0 1.5px #fff,inset 0 0 1px 1px rgba(0,0,0,.3),0 0 1px 2px rgba(0,0,0,.4);cursor:head;height:4px;transform:translate(-2px,-2px);width:4px}</style><style type="text/css">.vc-hue{border-radius:2px;bottom:0;left:0;position:absolute;right:0;top:0}.vc-hue--horizontal{background:linear-gradient(90deg,red 0,#ff0 17%,#0f0 33%,#0ff 50%,#00f 67%,#f0f 83%,red)}.vc-hue--vertical{background:linear-gradient(0deg,red 0,#ff0 17%,#0f0 33%,#0ff 50%,#00f 67%,#f0f 83%,red)}.vc-hue-container{cursor:pointer;height:100%;margin:0 2px;position:relative}.vc-hue-pointer{position:absolute;z-index:2}.vc-hue-picker{background:#fff;border-radius:1px;box-shadow:0 0 2px rgba(0,0,0,.6);cursor:pointer;height:8px;margin-top:1px;transform:translateX(-2px);width:4px}</style><style type="text/css">.vc-chrome{background:#fff;background-color:#fff;border-radius:2px;box-shadow:0 0 2px rgba(0,0,0,.3),0 4px 8px rgba(0,0,0,.3);box-sizing:initial;font-family:Menlo;width:225px}.vc-chrome-controls{display:flex}.vc-chrome-color-wrap{position:relative;width:36px}.vc-chrome-active-color{border-radius:15px;height:30px;overflow:hidden;position:relative;width:30px;z-index:1}.vc-chrome-color-wrap .vc-checkerboard{background-size:auto;border-radius:15px;height:30px;width:30px}.vc-chrome-sliders{flex:1}.vc-chrome-fields-wrap{display:flex;padding-top:16px}.vc-chrome-fields{display:flex;flex:1;margin-left:-6px}.vc-chrome-field{padding-left:6px;width:100%}.vc-chrome-toggle-btn{position:relative;text-align:right;width:32px}.vc-chrome-toggle-icon{cursor:pointer;margin-right:-4px;margin-top:12px;position:relative;z-index:2}.vc-chrome-toggle-icon-highlight{background:#eee;border-radius:4px;height:28px;left:12px;position:absolute;top:10px;width:24px}.vc-chrome-hue-wrap{margin-bottom:8px}.vc-chrome-alpha-wrap,.vc-chrome-hue-wrap{height:10px;position:relative}.vc-chrome-alpha-wrap .vc-alpha-gradient,.vc-chrome-hue-wrap .vc-hue{border-radius:2px}.vc-chrome-alpha-wrap .vc-alpha-picker,.vc-chrome-hue-wrap .vc-hue-picker{background-color:#f8f8f8;border-radius:6px;box-shadow:0 1px 4px 0 rgba(0,0,0,.37);height:12px;transform:translate(-6px,-2px);width:12px}.vc-chrome-body{background-color:#fff;padding:16px 16px 12px}.vc-chrome-saturation-wrap{border-radius:2px 2px 0 0;overflow:hidden;padding-bottom:55%;position:relative;width:100%}.vc-chrome-saturation-wrap .vc-saturation-circle{height:12px;width:12px}.vc-chrome-fields .vc-input__input{border:none;border-radius:2px;box-shadow:inset 0 0 0 1px #dadada;color:#333;font-size:11px;height:21px;text-align:center;width:100%}.vc-chrome-fields .vc-input__label{color:#969696;display:block;font-size:11px;line-height:11px;margin-top:12px;text-align:center;text-transform:uppercase}.vc-chrome__disable-alpha .vc-chrome-active-color{height:18px;width:18px}.vc-chrome__disable-alpha .vc-chrome-color-wrap{width:30px}.vc-chrome__disable-alpha .vc-chrome-hue-wrap{margin-bottom:4px;margin-top:4px}</style></head>
+<body style="">
+
+<header>
+  <div class="brand"><span class="dot live" id="dot"></span>会议助理</div>
+  <input class="meeting-title" id="title" value="" spellcheck="false">
+  <span class="stat"><span class="k">时长</span><b id="elapsed">140:15</b></span>
+  <span class="sep"></span>
+  <span class="stat" title="已识别的发言段数 / 已提取的线索数">
+    <span class="k">发言</span><b id="nseg">3</b>
+    <span class="k">线索</span><b id="nclue">10</b></span>
+  <span class="stat" id="audio-stat" title="本机麦克风：未采集"><span class="k">电平</span><b style="color:">—</b></span>
+  <div class="spacer"></div>
+  <button class="btn ghost" id="btn-search" title="搜索会议与资料库（Ctrl+K）">
+    <svg width="14" height="14" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-darkreader-inline-stroke="" style="--darkreader-inline-stroke: currentColor;"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path></svg>
+    搜索</button>
+  <button class="btn ghost" id="btn-test" title="把一段 WAV 当成麦克风输入回放（无麦克风也能演示）">
+    <svg width="14" height="14" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-darkreader-inline-stroke="" style="--darkreader-inline-stroke: currentColor;"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>
+    试听回放</button>
+  <button class="btn ghost" id="btn-transcript" title="导出纯文本转写（Ctrl+E）">
+    <svg width="14" height="14" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-darkreader-inline-stroke="" style="--darkreader-inline-stroke: currentColor;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>转写</button>
+  <button class="btn ghost" id="btn-left" title="折叠/展开参会人员">
+    <svg width="14" height="14" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-darkreader-inline-stroke="" style="--darkreader-inline-stroke: currentColor;"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>人员</button>
+  <button class="btn ghost" id="btn-right" title="折叠/展开线索">
+    <svg width="14" height="14" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-darkreader-inline-stroke="" style="--darkreader-inline-stroke: currentColor;"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>线索</button>
+  <!-- 录音按钮：开始/停止都由用户点。录音什么时候算讲完，只有人知道。 -->
+  <button class="btn ghost" id="btn-mic" title="开始录音">
+    <svg width="14" height="14" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-darkreader-inline-stroke="" style="--darkreader-inline-stroke: currentColor;"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+    <span id="mic-dot" style="display: none; color: var(--risk); --darkreader-inline-color: var(--darkreader-text--risk, var(--darkreader-text-000000, #e8e6e3));" data-darkreader-inline-color="">●</span>
+    <span id="mic-label">录音</span></button>
+  <button class="btn ghost" id="btn-settings" title="设置（语音识别 / 检索 / 大模型 / 知识库）">
+    <svg width="14" height="14" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-darkreader-inline-stroke="" style="--darkreader-inline-stroke: currentColor;">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+    </svg>
+    设置</button>
+  <button class="btn ghost" id="btn-theme" title="当前：暗色，点击切换">亮色</button>
+</header>
+
+<main id="main">
+  <!-- ── 左：参会人员 ─────────────────────────────────────────────── -->
+  <aside class="col left" id="col-left">
+    <div class="col-head">
+      <h2>参会人员</h2>
+      <span class="count" id="pcount">8</span>
+      <div class="spacer"></div>
+      <span class="hint" style="padding:0" title="点某个人可把他设为当前发言人">点选=发言人</span>
+    </div>
+    
+<div class="col-body tight" id="people"></div>
+
+    <div style="padding:0 10px 12px">
+      <div class="add-row">
+        <input id="new-person" placeholder="加人…" spellcheck="false">
+        <button class="btn ghost" id="add-person" style="padding:6px 9px">＋</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── 中：发言流 ───────────────────────────────────────────────── -->
+  <section class="col mid" id="col-mid">
+    <!-- 两块方向相反的清单，刻意分开：
+         会议流程由主持人定，从外部来（可导入 docx），决定"我该听什么"；
+         发言计划是用户自己的，会中不断积累，决定"我该讲什么"。
+         发言计划不在这里——它是便签，浮在发言流上方（见 #notes）。 -->
+    <div class="planbar">
+      <div class="plan" id="plan-agenda">
+        <div class="pl-head" id="pa-head">
+          <h2>会议流程</h2>
+          <span class="count" id="pa-count">0</span>
+          <span class="pl-src" id="pa-src" title="还没有导入会议流程"></span>
+          <div class="spacer"></div>
+          <button class="pl-btn" id="pa-import" title="导入主持人给的会议流程（docx / md / txt）">导入</button>
+          <button class="pl-btn" id="pa-toggle">展开</button>
+        </div>
+        <div class="pl-list" id="pa-list"><div class="pl-empty">还没有会议流程。点「导入」读主持人给的 docx / md / txt，或直接手写。</div><div class="pl-add"><input placeholder="加一项流程…" spellcheck="false"></div></div>
+      </div>
+    </div>
+
+    <div class="col-head">
+      <h2>发言流</h2>
+      <span class="count" id="mcount">3</span>
+      <div class="spacer"></div>
+      <button class="pl-btn" id="btn-notes" title="显示/隐藏发言计划便签（Alt+P）">便签 ✓</button>
+      <span class="hint" style="padding:0">
+        悬停关键词看摘要 · 点击看佐证</span>
+    </div>
+    
+<div class="col-body feed" id="feed" style=""></div>
+
+
+    <!-- 便签入口条。便签本体不在这里——它们在 <main> 之外的 #notes-layer 里。
+         写要点就是在这里打一行字、点「＋ 新便签」——**不再开弹窗**。
+         用户的原话："我的发言计划其实最好不好搞弹出框，容易造成麻烦。其实最好是自己做个
+         输入框，输入文字后自己点击新便签生成。" 弹窗要多一次开关、要点外面才能看见
+         自己刚写的东西，而写要点是开会时反复要做的小动作，越直接越好。 -->
+    <div id="notes" class="notes">
+      <div class="notes-head">
+        <span class="notes-title">我的发言计划</span>
+        <span class="count" id="pp-count">1</span>
+        <input class="notes-input" id="pp-input" spellcheck="false" placeholder="写一条要点，回车即成便签…">
+        <button class="pl-btn" id="pp-add" title="把输入框里的字变成一张便签">＋ 新便签</button>
+        <div class="spacer"></div>
+        <button class="pl-btn" id="pp-reload" title="你在 Obsidian / 编辑器里改过 发言计划.md，点这里把改动读回来">读文件</button>
+        <button class="pl-btn" id="pp-reset" title="把便签放回自动排布（窗口改过大小、或者摆乱了之后用）">重排</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 右：线索 ─────────────────────────────────────────────────── -->
+  <aside class="col right" id="col-right">
+    <div class="col-head">
+      <h2>线索</h2>
+      <span class="count" id="ccount">10</span>
+      <div class="spacer"></div>
+      <span class="hint" style="padding:0" id="clue-hint">按类别筛选</span>
+    </div>
+    
+<div class="filters" id="filters"></div>
+
+    
+<div class="col-body tight" id="clues"></div>
+
+    <!-- 默认隐藏：以前这里是 style=""，于是空面板一直挂在右栏底部，而且 Esc 的判据
+         `style.display !== "none"` 会先把这条空面板关掉，用户的第一次 Esc 被吃掉。 -->
+    <div class="detail" id="detail" style="display:none">
+      <div class="d-head">
+        <h3 id="d-title">技术术语 · 佐证</h3>
+        <button class="d-close" id="d-close">×</button>
+      </div>
+      
+<div class="d-body" id="d-body"></div>
+
+    </div>
+  </aside>
+</main>
+
+<!-- 便签层：覆盖整个界面的一层。它是 <main> 的兄弟而不是子元素，坐标就是视口坐标，
+     于是便签可以摆到任何地方——左栏上、中栏上、右栏上、跨栏都行。
+     这一层本身 pointer-events:none，只有便签自己接收指针事件，否则它会挡住整个界面。 -->
+
+<div id="notes-layer" class="notes-layer"></div>
+
+
+
+<div id="pop" style="display: none; left: 1203.3px; top: 369.3px;"></div>
+
+<div id="search">
+  <div class="s-box">
+    <input class="s-in" id="s-in" placeholder="搜索发言与资料库…" spellcheck="false">
+    
+<div class="s-res" id="s-res"></div>
+
+    <div class="s-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+      <span><kbd>Enter</kbd> 定位到发言</span>
+      <span><kbd>Esc</kbd> 关闭</span>
+    </div>
+  </div>
+</div>
+<!-- 设置：三件互不相干的事（转写 / 检索 / 大模型）合成一页，左轨分节。
+     ASR 与嵌入是内置的，列在这里不是为了"可配置"，而是为了能自查状态：
+     用户最需要知道的是"它能不能用"，而不是"它的路径是什么"。 -->
+<div id="settings">
+  <div class="st-box">
+    <nav class="st-rail">
+      <h3>设置</h3>
+      <div id="st-tabs"></div>
+    </nav>
+    <section class="st-pane">
+      <div class="st-head">
+        <h2 id="st-title">语音识别</h2>
+        <span class="st-sub" id="st-sub"></span>
+        <div class="spacer"></div>
+        <span class="st-tag" id="st-state"></span>
+      </div>
+      <div class="st-body" id="st-body"></div>
+      <div class="st-foot">
+        <span class="st-msg" id="st-msg"></span>
+        <span class="st-tag" id="st-path" title=""></span>
+        <button class="btn ghost" id="st-close">关闭</button>
+        <!-- 改 ASR 引擎 / 知识库后要重新加载模型：由启动器把服务重启一遍
+             （写 data/launcher/restart.flag，见 launcher/app.py）。不是启动器启动
+             的服务不显示这个按钮——没人会把进程拉回来。 -->
+        <button class="btn" id="st-restart" hidden
+                title="重启后端服务，让识别引擎 / 知识库重新加载">重启服务</button>
+        <button class="btn primary" id="st-save">保存</button>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- 导入。用自建面板而不是 prompt()：归属（项目库 / 公共库）必须让用户看见，
+     而 prompt 只能收一个字符串——把"进哪个库"藏进路径后缀或者默认值，
+     就是上一版那个冲突的成因。 -->
+<div id="imp">
+  <div class="st-box imp-box">
+    <section class="st-pane">
+      <div class="st-head">
+        <h2 id="imp-title">导入会议流程</h2>
+        <span class="st-sub">docx / md / txt</span>
+      </div>
+      <div class="st-body">
+        <div class="st-row" style="grid-template-columns:1fr">
+          <div class="st-lab" style="padding:0 0 6px">文件路径</div>
+          <input class="st-in" id="imp-path" spellcheck="false">
+          
+<div class="st-hint" id="imp-hint"></div>
+
+        </div>
+        <div class="st-row" style="grid-template-columns: 1fr; border-bottom: 0px; --darkreader-inline-border-bottom: 0px;" data-darkreader-inline-border-bottom="">
+          <div class="st-lab" style="padding:0 0 8px">归入哪个知识库</div>
+          <div id="imp-scope"></div>
+        </div>
+      </div>
+      <div class="st-foot">
+        
+<span class="st-msg" id="imp-msg"></span>
+
+        <button class="btn ghost" id="imp-cancel">取消</button>
+        <button class="btn primary" id="imp-ok">导入</button>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- 使用引导。只在"这台浏览器第一次打开"时自动出现一次（localStorage 记标记），
+     之后按 ? 或从「设置 → 界面」都能再看。正文由 GUIDE_STEPS 渲染（见脚本），
+     因为每一步都要顺带给目标控件加一圈强调环——写死在 HTML 里就得维护两份。
+     结构照抄 #imp（同一个覆盖层规则），第五个面板也一样抄。 -->
+<div id="guide">
+  <div class="g-box">
+    <div class="g-head">
+      <h2>使用引导</h2>
+      <span class="g-count" id="g-count"></span>
+      <div class="spacer"></div>
+      <button class="d-close" id="g-close" title="关闭（Esc）">×</button>
+    </div>
+    <div class="g-body" id="g-body"></div>
+    <div class="g-foot">
+      <span class="g-once">看完这一遍就不会再自动弹了</span>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="g-prev">上一步</button>
+      <button class="btn primary" id="g-next">下一步</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="">已新建计划项并附上参考</div>
+<!-- 启动/连接失败的可见提示。藏在页面里而不是只打 console，因为
+     "接口不通"在用户眼里和"界面没反应"长得一模一样。 -->
+<pre id="boot-error" style="display: none; position: fixed; left: 50%; top: 80px; transform: translateX(-50%); z-index: 200; max-width: min(720px, 90vw); background: rgb(253, 236, 235); border: 1px solid rgb(243, 201, 198); color: rgb(165, 26, 26); border-radius: 10px; padding: 14px 18px; font: 12.5px / 1.7 ui-monospace, Consolas, monospace; white-space: pre-wrap; box-shadow: rgba(0, 0, 0, 0.3) 0px 10px 30px -10px; --darkreader-inline-bgimage: initial; --darkreader-inline-bgcolor: var(--darkreader-background-fdeceb, #3a0906); --darkreader-inline-border-top: var(--darkreader-border-f3c9c6, #651b15); --darkreader-inline-border-right: var(--darkreader-border-f3c9c6, #651b15); --darkreader-inline-border-bottom: var(--darkreader-border-f3c9c6, #651b15); --darkreader-inline-border-left: var(--darkreader-border-f3c9c6, #651b15); --darkreader-inline-color: var(--darkreader-text-a51a1a, #e66060); --darkreader-inline-boxshadow: var(--darkreader-background-0000004d, rgba(24, 26, 27, 0.3)) 0px 10px 30px -10px;" data-darkreader-inline-bgimage="" data-darkreader-inline-bgcolor="" data-darkreader-inline-border-top="" data-darkreader-inline-border-right="" data-darkreader-inline-border-bottom="" data-darkreader-inline-border-left="" data-darkreader-inline-color="" data-darkreader-inline-boxshadow=""></pre>
+
+
+
+
+<div id="my-screen-short-host" data-v-app=""><div data-v-f3374563="" id="my-screen-short-container" data-my-screen-short-root="true" style="display: block;"><!----><!----><!----><!----><!----><!----></div></div>
+<script>
+
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (t, c, x) => { const n = document.createElement(t);
+  if (c) n.className = c; if (x != null) n.textContent = x; return n; };
+const esc = s => String(s == null ? "" : s)
+  .replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ── 状态 ────────────────────────────────────────────────────────────
+// 服务端是唯一真相来源；本地只保留渲染需要的最小状态：已经画出来的发言、
+// 当前筛选、当前选中。发言用 idx 做键，因为滑动窗口 ASR 会反复修正同一句，
+// 用数组下标当键会让"修正"变成"追加"。
+let S = {
+  title: "", started: 0, elapsed: 0,
+  participants: [], segments: [], clues: [], types: {},
+  agenda: [], prep: [], agendaSource: "",
+  since: -1, seqMax: -1,
+  filter: new Set(), selected: null, curSpeaker: null,
+  spkCounts: {},
+  voiceNames: {},
+  historyRev: null,
+  fullFetch: false,
+  spkSig: '',
+  rerenderAll: false,
+  // 这两个以前没初始化，靠 undefined 当假值在工作（能跑，但下次读代码的人得自己推断）。
+  // managed：本次服务是不是启动器拉起来的（决定设置页要不要显示「重启服务」）。
+  // notesHidden：便签层是否被用户收起（Alt+P）。
+  // guideSeen：使用引导是否已经看过（标记在服务端，见"使用引导"一节）。
+  managed: false, notesHidden: false, guideSeen: false,
+  segByIdx: new Map(), typesBySeg: new Map(),
+  detailFor: null, follow: true,
+  // 两块清单各自记展开状态：会议流程通常只在会前看一次，发言计划会中一直要开。
+  agendaOpen: false,
+  plannedSegIds: new Set(),
+  // 当前选中的计划项。拖参考时可以不必精确瞄准——先点选一条，再把参考拖到
+  // 计划区任意位置即可落到它上面。
+  selPlanId: null,
+  // 正在被拖拽的那一张便签。渲染只对它使用 DOM 里的实时位置，其余一律以服务端状态为准，
+  // 这样同样状态一定渲染出同样布局——否则宽度会跨轮次继承，最后便签互相压住。
+  dragId: null,
+  // 服务实际挂载的知识库，由 /api/state 每轮带回来。导入面板要照着它给选项。
+  corpora: null,
+  // ASR 就绪状态（由 /api/state 的 service.asr 带回）：
+  // 录音按钮必须等 ASR 加载完才可用——否则用户在模型加载窗口（~20s）里说话，
+  // 这段语音会被丢掉（后端 start 阻塞等模型，但麦克风还没开始采）。
+  asrLoaded: false, asrLoading: true, asrSpkError: "",
+};
+
+function toast(msg, ms = 2000) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), ms);
+}
+
+// ── 拉取状态 ────────────────────────────────────────────────────────
+async function tick() {
+  try {
+    const r = await fetch("/api/state?since=" + S.since, { cache: "no-store" });
+    const d = await r.json();
+    apply(d);
+    $("#dot").classList.add("live");
+  } catch (e) {
+    $("#dot").classList.remove("live");
+  }
+}
+
+function apply(d) {
+  S.title = d.title; S.started = d.started; S.elapsed = d.elapsed;
+  S.types = d.types || {};
+  S.participants = d.participants || [];
+  S.clues = d.clues || [];
+  S.agenda = d.agenda || [];
+  S.prep = d.prep || [];
+  S.agendaSource = d.agenda_source || "";
+  // 服务实际挂载的知识库（不是 settings.json 里写的）——导入面板要照着它给选项
+  if (d.service && d.service.corpora) S.corpora = d.service.corpora;
+  // 是不是启动器拉起来的：只有托管时才显示设置页里的「重启服务」按钮
+  if (d.service) S.managed = !!d.service.managed;
+  // 使用引导看过没有。只在第一帧之后用一次（boot 里的 maybeShowGuide），
+  // 但每轮都记下来：关闭引导时会把它设成 true，重启服务后由服务端再次带回。
+  if (d.service) S.guideSeen = !!d.service.guide_seen;
+  // ASR 就绪状态：录音按钮据此启用/禁用，并在按钮上提示"模型加载中/加载失败"。
+  // loaded=模型已就绪；loading=后台还在加载；两者皆否=加载失败（给用户明确报错，
+  // 而不是让按钮永远转圈）。spk_error 非空时声纹署名不可用，但不影响转写。
+  if (d.service && d.service.asr) {
+    S.asrLoaded = !!d.service.asr.loaded;
+    S.asrLoading = !!d.service.asr.loading;
+    S.asrSpkError = d.service.asr.spk_error || "";
+    paintMic();   // ASR 状态变了要立刻刷新按钮（loading→loaded 时启用录音）
+  }
+  // 历史被改过？（声纹署名、改人名、删发言都会让服务端的 history_rev +1）
+  // 增量轮询按 idx 只送新句子，**已经画出来的行永远不会再送**——所以这类改动
+  // 在界面上是看不见的，一直到用户按 F5。发现版本号变了就整份重拉一次。
+  if (d.history_rev != null) {
+    if (S.historyRev != null && d.history_rev !== S.historyRev) {
+      S.historyRev = d.history_rev;
+      refreshAll();
+      return;
+    }
+    S.historyRev = d.history_rev;
+  }
+  // 声纹 → 句数：未署名时用来提示点一下会一起改几句
+  // spk_counts 变了就要把**已经画出来的行**重画一遍。
+  // 增量轮询只送新的 idx，老行不会重新渲染——而"同一声音 2 句"这个提示依赖 spk_counts，
+  // 不重画的话它永远不出现（探针抓到过：新灌进去的 4 句一直不显示提示）。
+  if (d.service && d.service.spk_counts) {
+    const sig = JSON.stringify(d.service.spk_counts);
+    if (sig !== S.spkSig) {
+      S.spkSig = sig;
+      S.spkCounts = d.service.spk_counts;
+      S.rerenderAll = true;
+    }
+  }
+  if (d.service && d.service.voice_names) {
+    S.voiceNames = d.service.voice_names;
+  }
+  S.plannedSegIds = new Set(S.prep.map(p => p.seg_id).filter(Boolean));
+
+  // 只看新来的发言；已经渲染过的 idx 用 update 而不是 insert
+  let added = false;
+  for (const s of (d.segments || [])) {
+    if (S.segByIdx.has(s.idx)) {
+      Object.assign(S.segByIdx.get(s.idx), s);
+      renderSeg(s.idx);
+    } else {
+      S.segByIdx.set(s.idx, s);
+      insertSeg(s);
+      added = true;
+    }
+    S.seqMax = Math.max(S.seqMax, s.idx);
+  }
+  if (S.since < 0) S.since = 0;
+  else if (S.seqMax >= 0) S.since = S.seqMax + 1;
+
+  if (added) {
+    // 首屏不自动滚到底部会让人以为坏了；之后只在用户本来就在底部时跟随，
+    // 否则会把他正在读的内容顶走。
+    if (S.follow) scrollFeed();
+    $("#feed").querySelector(".empty")?.remove();
+  }
+
+  // 全量拉取的那一次，把界面上已经没有对应发言的行剪掉。
+  // 增量协议只能"新增/更新"，看不见**删除**——不剪的话删掉的句子会永远留在发言流里，
+  // 而且新句子拿到同一个 idx 时，界面上会出现两行同 idx 的发言。
+  if (S.fullFetch) {
+    S.fullFetch = false;
+    for (const n of [...$("#feed").querySelectorAll(".utt")]) {
+      if (!S.segByIdx.has(+n.dataset.idx)) n.remove();
+    }
+  }
+  // 需要的话把这一屏的发言全部重画（见上面 spk_counts 的处理）
+  if (S.rerenderAll) {
+    S.rerenderAll = false;
+    for (const idx of S.segByIdx.keys()) renderSeg(idx);
+  }
+  indexCluesBySeg();
+  renderPeople();
+  renderPlans();
+  renderClues();
+  renderHeader(d);
+
+  if (!S.selected && d.segments && d.segments.length) {
+    selectSeg(d.segments[d.segments.length - 1].idx, false);
+  }
+}
+
+function scrollFeed() {
+  const f = $("#feed");
+  requestAnimationFrame(() => { f.scrollTop = f.scrollHeight; });
+}
+
+function indexCluesBySeg() {
+  S.typesBySeg = new Map();
+  for (const c of S.clues) {
+    if (!S.typesBySeg.has(c.seg_id)) S.typesBySeg.set(c.seg_id, []);
+    S.typesBySeg.get(c.seg_id).push(c);
+  }
+}
+
+function renderHeader(d) {
+  $("#title").value = S.title;
+  const e = Math.max(0, Math.round(S.elapsed));
+  $("#elapsed").textContent =
+    Math.floor(e / 60) + ":" + String(e % 60).padStart(2, "0");
+  $("#nseg").textContent = S.segByIdx.size;
+  $("#nclue").textContent = S.clues.length;
+  $("#pcount").textContent = S.participants.length;
+  $("#mcount").textContent = S.segByIdx.size;
+  $("#ccount").textContent = S.clues.length;
+
+  const a = d.service && d.service.audio;
+  const asr = d.service && d.service.asr;
+  const st = $("#audio-stat");
+  if (a) {
+    const lvl = a.peak_dbfs;
+    const tone = lvl == null ? "" : (lvl > -45 ? "var(--com)" : "var(--text-3)");
+    st.innerHTML = `<span class="k">电平</span><b style="color:${tone}">` +
+      (lvl == null ? "—" : lvl.toFixed(1) + " dB") + "</b>";
+    st.title = `${a.source} · ${a.sample_rate} Hz · ${a.channels}ch · ` +
+      `已收 ${a.seconds_received}s`;
+  } else {
+    st.innerHTML = `<span class="k">音频</span><b>未连接</b>`;
+    st.title = "麦克风未采集；可用「试听回放」注入一段 WAV";
+  }
+  if (d.dropped && d.dropped.length) {
+    st.innerHTML += ` <span class="k" title="${esc(d.dropped.join(' / '))}">⚠</span>`;
+  }
+}
+
+// ── 左栏 ────────────────────────────────────────────────────────────
+function renderPeople() {
+  const box = $("#people");
+  if (!S.participants.length) {
+    box.innerHTML = '<div class="empty" style="padding:18px 8px">还没有参会人员<br>' +
+      '在下面输入名字添加</div>';
+    return;
+  }
+  box.textContent = "";
+  for (const p of S.participants) {
+    const row = el("div", "person" + (p.speaking ? " speaking" : "") +
+      (S.curSpeaker === p.id ? " active" : ""));
+    row.title = `${p.name}${p.org ? " · " + p.org : ""}${p.role ? " · " + p.role : ""}` +
+      "\n点击：把接下来的发言绑给他";
+    const av = el("div", "avatar", p.name.slice(-2));
+    av.style.background = p.color || "#64748b";
+    av.style.color = p.color || "#64748b";
+    av.style.setProperty("color", p.color || "#64748b");
+    const meta = el("div", "p-meta");
+    meta.appendChild(el("div", "p-name", p.name));
+    const sub = el("div", "p-sub");
+    sub.appendChild(el("span", null, [p.org, p.role].filter(Boolean).join(" · ") || "—"));
+    // 声纹胶囊：绑好了就说清这一段声音覆盖几句。
+    // "已绑定声纹"太笼统——用户想知道的是"我绑的那一下管了多少句"。
+    const nSpk = p.voice_id && S.spkCounts ? (S.spkCounts[p.voice_id] || 0) : 0;
+    const chip = el("span", "voice-chip" + (p.voice_id ? " on" : ""),
+      p.voice_id ? (nSpk > 1 ? `${nSpk} 句同一声音` : "已绑定声纹") : "未绑定");
+    chip.title = p.voice_note || (p.voice_id ? "这段声音已经绑给这个人" : "还没绑定");
+    if (p.voice_id) {
+      // 点胶囊可以解绑：绑错了要能退回来，否则只能删人重加。
+      chip.style.cursor = "pointer";
+      chip.onclick = async ev => {
+        ev.stopPropagation();
+        await fetch("/api/participants", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "unbind_voice", id: p.id }) });
+        toast(`已解除 ${p.name} 的声纹绑定`, 3000);
+        refreshAll();
+      };
+    }
+    sub.appendChild(chip);
+    meta.appendChild(sub);
+    const rm = el("button", "rm", "×");
+    rm.title = "移除此人";
+    rm.onclick = async ev => {
+      ev.stopPropagation();
+      await fetch("/api/participants", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "remove", id: p.id }) });
+      tick();
+    };
+    row.append(av, meta, rm);
+    row.onclick = () => {
+      S.curSpeaker = (S.curSpeaker === p.id) ? null : p.id;
+      renderPeople();
+      if (S.selected != null) bindSpeaker(S.selected);
+    };
+    box.appendChild(row);
+  }
+}
+
+/** Pull the whole state again, not just what is new.
+ *
+ * 声纹署名改的是**已经画出来**的那些发言，而增量轮询的 since 是"最后一句的 idx"，
+ * 永远不会再把它们送回来。不强制全量拉一次的话：服务端已经改名了，界面上还是"未署名"，
+ * 一直到用户按 F5。实测就是这样——探针从界面读到的名字全是"未署名"，而服务端的名字是对的。
+ * 绑声纹、解绑、改人名这些"改历史"的动作，都必须走这里。
+ */
+/** 确认声纹库的建议：和手动绑定走同一条路（服务端会顺带再登记一条向量）。 */
+async function confirmSuggestion(segId, personId) {
+  const d = await (await fetch("/api/participants", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "bind_voice", id: personId, seg_id: segId }) })).json();
+  if (d.error) { toast(d.error, 3600); return; }
+  toast(d.changed > 1
+    ? `已确认：同一段声音的 ${d.changed} 句都记为 ${(d.participant || {}).name}`
+    : `已确认：${(d.participant || {}).name}`, 3600);
+  refreshAll();
+}
+
+/** 不是他：记下来，这个声纹别再问。否定和肯定一样是信息。 */
+async function denySuggestion(segId) {
+  await fetch("/api/participants", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "deny_suggestion", seg_id: segId }) });
+  toast("已记下：这个声音不是他", 2600);
+  refreshAll();
+}
+
+/** 给匿名声纹起名字：所有同 spk 的段一起改名。 */
+async function renameSpeaker(spk) {
+  const name = prompt("给这个声音起个名字：", "");
+  if (!name || !name.trim()) return;
+  const d = await (await fetch("/api/participants", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "rename_speaker", spk, name: name.trim() }) })).json();
+  if (d.error) { toast(d.error, 3600); return; }
+  toast(`已把 ${d.renamed} 句记为「${name.trim()}」`, 3200);
+  refreshAll();
+}
+
+/** 把某段发言改归属到另一个说话人。 */
+async function reassignSeg(segId, curSpk) {
+  // 列出所有已知的 spk（从 segments 里收集）
+  const spks = new Set();
+  for (const [idx, s] of S.segByIdx) {
+    if (s.spk && s.spk !== curSpk) spks.add(s.spk);
+  }
+  if (spks.size === 0) { toast("没有其它说话人可选", 2600); return; }
+  const opts = [...spks].map(sp => {
+    const cnt = S.spkCounts ? (S.spkCounts[sp] || 0) : 0;
+    const label = S.voiceNames && S.voiceNames[sp]
+      ? S.voiceNames[sp] + "（" + cnt + " 句）"
+      : "匿名（" + cnt + " 句）";
+    return label + "  [" + sp + "]";
+  });
+  const choice = prompt("选择目标说话人（输入编号）：\n" +
+    opts.map((o, i) => (i + 1) + ". " + o).join("\n") + "\n\n输入 0 = 清除署名", "1");
+  if (choice === null) return;
+  const n = parseInt(choice, 10);
+  if (n === 0) {
+    // 清除署名
+    const d = await (await fetch("/api/segment", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "reassign", id: segId, target_spk: "" }) })).json();
+    if (d.error) { toast(d.error, 3600); return; }
+    toast("已清除署名", 2600);
+    refreshAll();
+    return;
+  }
+  if (n < 1 || n > opts.length) { toast("无效选择", 2600); return; }
+  const targetSpk = [...spks][n - 1];
+  const d = await (await fetch("/api/segment", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "reassign", id: segId, target_spk: targetSpk }) })).json();
+  if (d.error) { toast(d.error, 3600); return; }
+  toast("已改归属", 2600);
+  refreshAll();
+}
+
+// ── 录音按钮（本机麦克风）────────────────────────────────────────────
+// 用户的原话：「没有一个我可以让你知道什么时候停止录音的按钮之类的」。
+// 在这之前，录音由服务端启动、也没人说得清什么时候停，于是讲完了还在录静音——
+// 测试流程本身是坏的。现在开始/停止都在这个按钮上，停止时服务端把这一段的 PCM
+// 收成 WAV 并把时长、电平、峰值报回来。
+let micT0 = 0, micTimer = null, micOk = false;
+
+function paintMic() {
+  const on = micTimer !== null;
+  $("#mic-dot").style.display = on ? "" : "none";
+  if (!micOk) {
+    $("#mic-label").textContent = "录音";
+    $("#btn-mic").disabled = true;
+    $("#btn-mic").title = "这次启动没有麦克风输入（要用 --mic 启动）";
+    return;
+  }
+  // ASR 未就绪：禁用录音按钮并提示原因。
+  // 首次启动模型加载要 ~20s，这期间说话会被丢掉（后端 start 阻塞等模型，
+  // 麦克风还没开始采）。加载失败则明确报错，不让按钮永远转圈骗人。
+  if (!S.asrLoaded) {
+    $("#btn-mic").disabled = true;
+    if (S.asrLoading) {
+      $("#mic-label").textContent = "ASR 加载中…";
+      $("#btn-mic").title = "语音模型加载中（首次启动约 20 秒），完成后即可录音";
+    } else {
+      $("#mic-label").textContent = "ASR 未就绪";
+      $("#btn-mic").title = "语音模型加载失败，请重启服务后重试";
+    }
+    return;
+  }
+  $("#btn-mic").disabled = false;
+  $("#mic-label").textContent = on
+    ? "停止 " + fmtT((Date.now() - micT0) / 1000) : "录音";
+  $("#btn-mic").title = on ? "点一下停止，并把这一段存成文件" : "开始录音";
+}
+
+async function micAction(action) {
+  const d = await (await fetch("/api/mic", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }) })).json();
+  if (d.error) { toast(d.error, 3600); return d; }
+  if (action === "start") {
+    toast("开始录音。讲完点这个按钮停止。", 3000);
+  } else {
+    const tk = d.take || {};
+    toast(tk.wav
+      ? `已停止并保存 ${tk.wav.split(/[\\/]/).pop()} · ${tk.seconds}s · `
+        + `峰值 ${tk.peak}${tk.peak >= 0.99 ? "（削顶了，麦克风太冲）" : ""}`
+      : "已停止（这一段没有音频）", 5200);
+  }
+  paintMic();
+  return d;
+}
+
+$("#btn-mic").onclick = async () => {
+  // **按下就翻转状态，不等服务器回话。**
+  // 之前是"等 POST 返回才改按钮"，而服务器要在那次请求里加载模型（20+ 秒），
+  // 于是第一下看起来毫无反应，用户以为没按到、再按一次——这就是"要按两次"的原因。
+  const starting = micTimer === null;
+  if (starting) { micT0 = Date.now(); micTimer = setInterval(paintMic, 500); }
+  else { clearInterval(micTimer); micTimer = null; }
+  paintMic();
+  const d = await micAction(starting ? "start" : "stop");
+  if (d && d.error) {                      // 失败了回滚，别让按钮骗人
+    if (starting) { clearInterval(micTimer); micTimer = null; }
+    else { micT0 = Date.now(); micTimer = setInterval(paintMic, 500); }
+    paintMic();
+  }
+};
+fetch("/api/mic").then(r => r.json()).then(d => {
+  micOk = !!d.available;
+  if (d.running) { micT0 = Date.now() - (d.seconds || 0) * 1000;
+    micTimer = setInterval(paintMic, 500); }
+  paintMic();
+}).catch(() => { micOk = false; paintMic(); });
+
+async function refreshAll() {
+  S.since = -1;
+  S.seqMax = -1;
+  S.fullFetch = true;   // 全量拉：顺便把**已被删掉**的行从界面上清掉
+  await tick();
+}
+
+function bindSpeaker(idx) {
+  if (!S.curSpeaker) return;
+  const p = S.participants.find(x => x.id === S.curSpeaker);
+  if (!p) return;
+  const s = S.segByIdx.get(idx);
+  if (!s) return;
+  // 交给服务端去做"同一声纹一起署名"——**不要在这里只改本地这一句**。
+  //
+  // 这一句以前是 `s.speaker = p.name`，只动当前这一段，然后在参会人上写一个假的
+  // voice_id（"voice-" + id）。于是用户点了之后，同一段声音的其它句子还是"未署名"，
+  // 而左栏看起来已经绑好了——状态是假的，和界面对不上。
+  // 现在服务端返回改了几段，界面照实说出来。
+  fetch("/api/participants", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "bind_voice", id: p.id, seg_id: s.id }) })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { toast(d.error, 3600); return; }
+      if (d.spk && d.bound_segments > 1) {
+        toast(`已把同一段声音的 ${d.bound_segments} 句都记为 ${p.name}`, 3600);
+      } else if (d.spk) {
+        toast(`已记为 ${p.name}（这段声音目前只有 1 句）`, 3200);
+      } else {
+        toast(`已把这段记为 ${p.name}；这段没有声纹信息，不会自动推广到别的句子`, 4200);
+      }
+      refreshAll();
+    })
+    .catch(e => toast("署名失败：" + e, 4000));
+}
+
+// ── 中栏：发言流 ────────────────────────────────────────────────────
+// ── 推送（SSE）：服务端一改就送，没有轮询间隔 ─────────────────────────
+// 为什么换掉轮询：轮询是"拉"，天生有间隔；更糟的是增量的 since=最大idx+1
+// **只送新行、永远不重送被更新的行**，而流式识别恰恰是原地把一行越改越长——
+// 于是界面上每行只显示第一个版本，看起来就是"跟不上语音"。
+// 推送没有这个问题：改一次推一次，推的就是那一行的当前内容。
+function applyStreamSeg(seg) {
+  const known = S.segByIdx.has(seg.idx);
+  if (known) {
+    Object.assign(S.segByIdx.get(seg.idx), seg);   // 原地更新：正在长的那一行
+  } else {
+    S.segByIdx.set(seg.idx, seg);
+    insertSeg(S.segByIdx.get(seg.idx));
+  }
+  S.seqMax = Math.max(S.seqMax, seg.idx);
+  renderSeg(seg.idx);
+  if (!known) {
+    sortFeed();
+    follow();
+    const n = $("#nseg");
+    if (n) n.textContent = S.segByIdx.size;
+  }
+}
+
+function startStream() {
+  if (!window.EventSource) return;                 // 老浏览器：退回轮询
+  const es = new EventSource("/api/stream");
+  es.onmessage = ev => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.type === "seg" && d.seg) {
+        if (d.history_rev != null) S.historyRev = d.history_rev;  // 别让轮询又整份重拉
+        applyStreamSeg(d.seg);
+      }
+    } catch (e) { /* 一条坏消息不该拖垮页面 */ }
+  };
+  es.onerror = () => {};      // EventSource 自己会重连
+  window.__dshStream = es;
+}
+
+function insertSeg(s) {
+  const feed = $("#feed");
+  const node = el("div", "utt" + (s.revised ? " open" : ""));
+  node.dataset.idx = s.idx;
+  node.innerHTML = `
+    <div class="u-time"><span class="u-grip" title="拖到便签上钉住；拖到空白处则新建一张便签">⠿</span>${fmtT(s.start)}</div>
+    <div class="u-body">
+      <div class="u-who"></div>
+      <div class="u-text"></div>
+    </div>
+    <div class="rev" title="这句还可能被后续音频修正"></div>`;
+  node.onclick = () => selectSeg(s.idx, true);
+  feed.appendChild(node);
+  renderSeg(s.idx);
+  // 插到正确的时间位置：ASR 修正过的句子会带着更早的 start 回来，
+  // 简单 append 会让时间轴倒着长。
+  if (feed.children.length > 1) sortFeed();
+}
+
+function sortFeed() {
+  const feed = $("#feed");
+  const nodes = [...feed.querySelectorAll(".utt")];
+  nodes.sort((a, b) => {
+    const A = S.segByIdx.get(+a.dataset.idx) || {}, B = S.segByIdx.get(+b.dataset.idx) || {};
+    return (A.start || 0) - (B.start || 0) || (+a.dataset.idx) - (+b.dataset.idx);
+  });
+  for (const n of nodes) feed.appendChild(n);
+}
+
+function renderSeg(idx) {
+  const s = S.segByIdx.get(idx);
+  const node = $(`#feed .utt[data-idx="${idx}"]`);
+  if (!s || !node) return;
+  const who = node.querySelector(".u-who");
+  const spk = s.spk || "";
+  const nSpk = spk && S.spkCounts ? (S.spkCounts[spk] || 0) : 0;
+  if (s.speaker) {
+    const p = S.participants.find(x => x.name === s.speaker);
+    who.textContent = s.speaker;
+    who.style.color = (p && p.color) || "var(--text-2)";
+    // 同一个人的发言用同一个颜色：左侧色条改成他的颜色。
+    node.classList.add("has-spk");
+    node.style.setProperty("--utt-bar", (p && p.color) || "var(--term)");
+    who.onclick = ev => { ev.stopPropagation(); S.curSpeaker = p ? p.id : null;
+      renderPeople(); };
+  } else {
+    // 未署名时把"同一段声音还有几句"说出来：用户点一下，这些会一起改名。
+    // 不说的话他不知道这一下会影响别的句子，也不知道为什么改完之后别处也变了。
+    who.textContent = "";
+    who.appendChild(document.createTextNode(
+      S.curSpeaker
+        ? "点击归到 " + ((S.participants.find(x => x.id === S.curSpeaker) || {}).name || "?")
+        : "未署名"));
+    who.style.color = "var(--text-3)";
+    node.classList.remove("has-spk");
+    node.style.removeProperty("--utt-bar");
+    if (spk && nSpk > 1) {
+      who.appendChild(el("span", "u-spk",
+        "同一声音 " + nSpk + " 句 · 点一次一起署名"));
+    }
+    // 声纹库认出来了：给建议，让人点一下。名字来自跨会声纹库，可靠度用百分比写出来。
+    const sug = s.suggest;
+    if (sug && sug.name) {
+      const box = el("span", "u-sug");
+      box.appendChild(el("span", null,
+        (sug.ok ? "听起来像 " : "有点像 ") + sug.name + " " +
+        Math.round((sug.score || 0) * 100) + "%"));
+      const yes = el("button", null, "是他");
+      yes.title = "绑定：把这一声纹的所有发言都记为 " + sug.name;
+      yes.onclick = ev => { ev.stopPropagation(); confirmSuggestion(s.id, sug.person_id); };
+      const no = el("button", "no", "不是他");
+      no.title = "记下来，这一声纹别再问了";
+      no.onclick = ev => { ev.stopPropagation(); denySuggestion(s.id); };
+      box.appendChild(yes); box.appendChild(no);
+      who.appendChild(box);
+    }
+    // 手动修正：改名 + 改归属
+    if (spk) {
+      const fixBox = el("span", "u-sug");
+      const btnR = el("button", null, "改名");
+      btnR.title = "给这个声音起个名字（所有同声音的段一起改）";
+      btnR.onclick = ev => { ev.stopPropagation(); renameSpeaker(spk); };
+      const btnA = el("button", null, "改归属");
+      btnA.title = "把这段发言移到另一个说话人";
+      btnA.onclick = ev => { ev.stopPropagation(); reassignSeg(s.id, spk); };
+      fixBox.appendChild(btnR); fixBox.appendChild(btnA);
+      who.appendChild(fixBox);
+    }
+  }
+  node.querySelector(".u-text").innerHTML = highlight(s);
+  node.classList.toggle("open", !!s.revised);
+  node.classList.toggle("sel", S.selected === idx);
+
+  // 用颜色而不是文字标签表达类型。用户的要求是"同类的就同一种颜色就行了"——
+  // 一排文字徽章（甲方要求/时间节点/我方承诺…）在每条发言下面重复出现，
+  // 既占地方又要逐个读，而颜色是零成本的并行通道。类型名移到 title 里，
+  // 需要确认时把鼠标停一下即可，右栏的线索卡都带完整文字标签。
+  const cs = S.typesBySeg.get(s.id) || [];
+  let tone = "";
+  for (const k of Object.keys(S.types)) {          // 按 CLUE_TYPES 顺序取最高优先级
+    const hit = cs.find(c => c.kind === k);
+    if (hit) { tone = hit.meta.tone; break; }
+  }
+  node.dataset.tone = tone;
+  node.title = cs.length
+    ? cs.map(c => c.meta.label + "：" + c.anchor).join("\n")
+    : "";
+}
+
+function fmtT(t) {
+  t = Math.max(0, t || 0);
+  return Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0");
+}
+
+// 关键词高亮：长词优先，且不跨越已生成的标签——用占位符做两阶段替换，
+// 直接在 HTML 上循环替换会让后一个词切进前一个词的标签里。
+function highlight(s) {
+  let raw = String(s.text || "");
+  const kws = (s.keywords || []).filter(k => k && raw.includes(k))
+    .sort((a, b) => b.length - a.length);
+  if (!kws.length) return esc(raw);
+  const marks = [];
+  for (const k of kws) {
+    raw = raw.split(k).join("\u0000" + marks.length + "\u0000");
+    marks.push(k);
+  }
+  let html = esc(raw);
+  marks.forEach((k, i) => {
+    html = html.replace("\u0000" + i + "\u0000",
+      `<span class="kw" data-term="${esc(k)}">${esc(k)}</span>`);
+  });
+  return html;
+}
+
+function selectSeg(idx, scroll) {
+  if (S.selected != null) {
+    const old = $(`#feed .utt[data-idx="${S.selected}"]`);
+    old && old.classList.remove("sel");
+  }
+  S.selected = idx;
+  const node = $(`#feed .utt[data-idx="${idx}"]`);
+  if (node) {
+    node.classList.add("sel");
+    if (scroll) node.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  // 右栏跟着当前发言走：这是"同时有发言和参会人员才能关联声纹"那条要求的落点,
+  // 选中一段发言时右边立刻只显示这一段产生的线索。
+  if (S.curSpeaker) bindSpeaker(idx);
+  renderClues();
+}
+
+// ── 会议流程（面板）与发言计划（便签）────────────────────────────────
+// 两块清单的数据来源同一个 API，但呈现方式刻意不同：
+//   会议流程 —— 主持人的安排，从文件来，是"背景"，用可折叠面板（会前看一次）；
+//   发言计划 —— 用户自己的要点，是"工作面"，用便签（会中一直要看全貌）。
+//
+// 标签用颜色区分，而且**只有颜色**：用户明确说过"不用把同类型的放到同一个标签，
+// 要区分用不同颜色就行了"。便签上因此只有一个 10px 的小字名，扫一眼靠颜色。
+// 编辑器里相反——要选，就得看见名字，所以编辑器用"色点 + 名字"的药丸按钮。
+//
+// 这套 kind 与 scripts/meeting/planfile.py 的 PLAN_KINDS 必须一致：文件里的 kind
+// 决定便签颜色，两边对不上就会出现"文件说是风险、界面上是议题"。改一边要改另一边。
+const PL_KINDS = {
+  topic: "议题", confirm: "待确认", report: "要汇报", risk: "风险",
+  followup: "上次遗留",
+};
+// kind -> CSS 令牌。不写死颜色值：暗色主题下令牌会换成另一组，
+// 写死就等于"暗色主题下标签还是亮色的那套颜色"，而那种错很难被看出来。
+const PL_TOKENS = {
+  topic: "--dec", confirm: "--req", report: "--com", risk: "--risk",
+  followup: "--agr",
+};
+
+function renderPlans() {
+  renderPlanList({ list: "#pa-list", count: "#pa-count",
+                   items: S.agenda, which: "agenda" });
+  renderNotes();
+  $("#pa-src").textContent = S.agendaSource
+    ? "来自 " + S.agendaSource.split(/[\\/]/).pop() : "";
+  $("#pa-src").title = S.agendaSource || "还没有导入会议流程";
+}
+
+// ── 便签 ────────────────────────────────────────────────────────────
+
+const NOTE_W = 232;
+const NOTE_GAP = 12;
+
+/** Where notes are **placed automatically**: a lane on the right of the 发言流 column.
+ *
+ * 三个版本才走到这里，而且第四版是被用户骂出来的。
+ *
+ * 第一版便签层整页铺开。实测截图里它压在右栏的线索上——线索是"我讲这个时有依据"那一半，
+ * 盖住它等于把助手的一半功能挡掉。而且坐标是视口绝对值，窗口一改大小就跑到别的栏上。
+ *
+ * 第二版把便签夹进中栏，不再压侧栏——但整片压住了发言流：发言正文横跨整列，便签摆哪都盖字。
+ * 而"忠实记录"是这产品的核心，为了看自己的便签把别人说的话盖掉，这个交换是亏的。
+ *
+ * 第三版给便签留一条专道，发言流只画左边那一半。**但这一版把"自动摆放的位置"和
+ * "允许挪动的范围"当成了同一个东西**，于是给整便签道加了一道硬夹紧。用户的反馈是
+ * "还是非常不跟手，而且可移动的范围被限制了"——在便签道边上往左或往上拖，可用空间是 0，
+ * 便签纹丝不动。**夹紧太紧，表现上就是"不跟手"**，两句话说的是同一件事。
+ *
+ * 所以第四版把两件事拆开：
+ *   · `noteArea()`  —— 自动摆放落在哪（便签道，界面一打开就整齐）；
+ *   · `moveArea()`  —— 允许挪到哪（整个工作区，只保证不飞出屏幕）。
+ * 默认整齐，但用户想摆哪就摆哪——那本来就是便签的意义。
+ */
+const NOTE_LANE_MAX = 2 * 232 + 12;      // 最多两列便签
+
+/** Where a note may be **dragged**: the whole workspace, minus the header.
+ *
+ * 只保留"不能被推出屏幕"这一条：留 4px 边距，保证任何一张都还能被抓回来。
+ * 便签盖住什么由用户决定——盖住发言流是他的选择，而被一道看不见的墙挡住不是。
+ */
+function moveArea() {
+  const head = document.querySelector("header");
+  const top = Math.round((head ? head.getBoundingClientRect().bottom : 0) + 4);
+  return { left: 4, top: top, right: Math.max(120, innerWidth - 4),
+           bottom: Math.max(top + 80, innerHeight - 4) };
+}
+
+function noteArea() {
+  const mid = $("#col-mid");
+  const feed = $("#feed");
+  if (!mid) {
+    return { left: 0, right: innerWidth, top: 0, bottom: innerHeight, laneW: NOTE_W };
+  }
+  const r = mid.getBoundingClientRect();
+  const fr = feed ? feed.getBoundingClientRect() : r;
+  // 中栏越宽便签道越宽，但不低于一列、不超过两列——窄窗口下要优先保住发言流。
+  const laneW = Math.max(NOTE_W,
+    Math.min(NOTE_LANE_MAX, Math.round(r.width * 0.52)));
+  // left 由 right - laneW 推出来，不能写成 r.right - laneW + 8：
+  // 那样可用跨度会少 16px，正好装不下"两列 232 + 12 间距 = 476"，
+  // 于是列数算成 1，两张便签被摆到相差 228px 的位置上——肉眼看不出来，但会重叠 4px。
+  const right = Math.round(r.right - 8);
+  return {
+    left: right - laneW,
+    right: right,
+    top: Math.round(Math.max(fr.top, r.top) + 8),
+    bottom: Math.round(r.bottom - 8),
+    laneW: laneW,
+  };
+}
+
+/** Reserve the lane for notes, or hand the full width back to the transcript. */
+/** Reserve the lane for notes, or hand the full width back to the transcript.
+ *
+ * 只有在**还有便签是自动摆放的**时候才让位。用户把便签都拖到别处之后，发言流就该拿回
+ * 整栏宽度——否则中栏会永远窄掉一半，为了一个已经不存在的东西付代价。
+ */
+function applyNoteLane() {
+  const feed = $("#feed");
+  if (!feed) return;
+  const autoPlaced = (S.prep || []).some(a => a.nx == null);
+  if (S.notesHidden || !autoPlaced) {
+    feed.style.marginRight = "";
+    return;
+  }
+  // 便签道含右侧留白，发言流让出同样的宽度，于是两边永远不重叠。
+  feed.style.marginRight = (noteArea().laneW + 8) + "px";
+}
+
+function clampNote(b, x, y, w, h) {
+  const maxX = Math.max(b.left, b.right - w);
+  const maxY = Math.max(b.top, b.bottom - Math.max(h, 60));
+  return { x: Math.min(maxX, Math.max(b.left, x)),
+           y: Math.min(maxY, Math.max(b.top, y)) };
+}
+
+/** What the notes layer renders from. Two jobs, both learned the hard way:
+ *
+ *  1. **拖拽期间不许重建。** 重建会换掉元素，而拖拽的处理函数抓着旧元素——写进去的位置
+ *     没人看得见，用户看到的是"每秒弹回起点一次"。这就是"便签移动非常困难"的根因。
+ *  2. **轮询不该重建没变的东西。** 每个 poll（约 1 秒）都重建整层，会把正在改字的便签
+ *     打断（contentEditable 元素被换掉，焦点就没了），也让拖拽更容易被撞上。
+ *
+ * 所以：拖拽中直接返回；签名没变直接返回。几何也算进签名——窗口改大小之后签名变了，
+ * 便签才会按新的便签道重排。
+ */
+function notesSignature(items, b) {
+  const geo = [b.left, b.right, b.top, b.bottom].join(",");
+  const body = (items || []).map(a => [
+    a.id, a.kind, a.done ? 1 : 0, a.topic, a.detail || "", a.seg_id || "",
+    (a.refs || []).length, a.nx, a.ny, a.nw, a.nz,
+  ].join("|")).join("\n");
+  return geo + "#" + items.length + "#" + body;
+}
+
+let notesSig = "";
+
+function renderNotes() {
+  const layer = $("#notes-layer");
+  const items = S.prep || [];
+  $("#pp-count").textContent = items.length;
+  // 便签道先定下来，发言流再让出对应宽度——顺序反了会量到上一次的布局。
+  applyNoteLane();
+
+  // 正在拖：这一层保持原样。任何重建都会把手指底下的元素换掉。
+  if (S.dragId) return;
+
+  const sig = notesSignature(items, noteArea());
+  if (sig === notesSig && layer.childElementCount) {
+    // 内容没变：只同步"选中"这一个 class，不重建 DOM。
+    // 重建会把正在编辑的便签打断——点一下正文准备改字，一秒后焦点就没了。
+    for (const n of layer.querySelectorAll(".note")) {
+      n.classList.toggle("active", n.dataset.id === S.selPlanId);
+    }
+    return;
+  }
+  notesSig = sig;
+
+  // 只在**正在拖的那一张**上使用 DOM 里的实时位置。轮询会重建 DOM，不记的话
+  // 用户拖到一半的便签会跳回旧位置。
+  //
+  // 这个缓存只对拖拽中的那张成立。之前它对所有便签生效，于是渲染不再幂等：某次渲染
+  // 量到的宽度会被下一次当成"用户设的宽度"继承下去，而同一轮的其它便签用的是新列宽，
+  // 两者越差越多，最后互相压住（实测 1280x800 下 232 与 172 两套宽度混在一起）。
+  const live = {};
+  if (S.dragId) {
+    const n = layer.querySelector('.note[data-id="' + S.dragId + '"]');
+    if (n) {
+      live[S.dragId] = { nx: parseFloat(n.style.left), ny: parseFloat(n.style.top),
+                         nw: parseFloat(n.style.width),
+                         nh: n.style.height ? parseFloat(n.style.height) : 0 };
+    }
+  }
+  layer.textContent = "";
+
+  // 空的时候**什么都不画**。原来这里是一块四行加粗的引导文字，摆在发言流右侧
+  // 正中间——用户说"非常碍眼"，而且它是**重复的**：底部那条栏已经有输入框
+  // （placeholder 写着"写一条要点，回车即成便签…"）和「＋ 新便签」按钮。
+  // 引导文字该在用户需要它的那一刻出现，而不是长期占着版面。
+  if (!items.length) return;
+
+  const b = noteArea();
+  // 列数取两者的大者：
+  //   · 横向放得下几列（便签道宽度决定），这是首选；
+  //   · 竖向至少要几列才装得下（窗口矮时要多开一列，否则最后一张会和上一张叠住）。
+  // 只用高度算会导致同一个窗口因为"会议流程"折叠与否而换列数——同一份状态出两种布局，
+  // 那种不稳定最容易被当成 bug。
+  const laneW = b.right - b.left;
+  const byWidth = Math.max(1,
+    Math.floor((laneW + NOTE_GAP) / (NOTE_W + NOTE_GAP)));
+  const EST_H = 196;
+  const avail = Math.max(120, b.bottom - b.top);
+  const perCol = Math.max(1, Math.floor(avail / EST_H));
+  const needCols = Math.max(1, Math.ceil(items.length / perCol));
+
+  // 摆放可以**重来**：一列放不下就多开一列。
+  //
+  // 估算永远不准——没有参考条的便签高 63px，挂两条参考的高 232px，差三倍多。
+  // 估算少了就会出现"这一列塞不下，只能要么叠住、要么跑出屏幕"。这两种都不可接受
+  // （叠住看不清，出屏抓不回来），所以宁可把宽度收窄一点、多开一列。
+  // `attempts` 记录实际用了几列，写进 audit 的指标里，便于以后回看。
+  let cols = Math.max(1, Math.min(3, Math.max(byWidth, needCols)));
+  let placed = [];
+  let overflowed = false;
+  let assigned = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = placePass(cols);
+    placed = res.placed;
+    overflowed = res.overflowed;
+    assigned = res.assigned;
+    if (!overflowed || cols >= 3) break;
+    cols += 1;                      // 放不下：多一列，重来
+  }
+
+  // 首次摆放落盘（就一次，不是每次渲染）。这样"自动摆放"只发生一次，
+  // 之后每张便签都有自己的坐标，别人怎么拖都不会让它们挪位。
+  if (assigned.length) {
+    fetch("/api/prep/layout", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: assigned }),
+    }).catch(() => { /* 落盘失败不影响本次显示，下次渲染会再试 */ });
+  }
+
+  /** One full placement pass at a given column count. Returns the placed rects. */
+  function placePass(cols) {
+  const autoW = Math.max(150, Math.min(NOTE_W,
+    Math.floor((laneW - (cols - 1) * NOTE_GAP) / cols)));
+  const colX = i => b.left + i * (autoW + NOTE_GAP);
+  // 每列一个"下一个空位的 y"。高度只有插进 DOM 之后才知道，所以边插边量，
+  // 用真实高度推进游标——固定行距是错的：带参考条的便签高 179，行距写 172 就叠 7px。
+  const cursor = [];
+  for (let i = 0; i < cols; i++) cursor.push(b.top);
+  const placed = [];
+  // 这一遍里被**自动**摆了位置的便签（见下面 assigned.push）
+  const assigned = [];
+  let overflow = false;
+  const ovl = (a, b2) =>
+    Math.min(a.right, b2.right) - Math.max(a.left, b2.left) > 4 &&
+    Math.min(a.bottom, b2.bottom) - Math.max(a.top, b2.top) > 4;
+  const hitsRect = (x, y, w, h) =>
+    placed.find(p => ovl(p.rect, { left: x, top: y, right: x + w, bottom: y + h }));
+  const colOf = x => Math.max(0, Math.min(cols - 1,
+    Math.round((x - b.left) / (autoW + NOTE_GAP))));
+  layer.textContent = "";
+
+  for (const a of items) {
+    const pos = live[a.id] || null;
+    const wantX = pos ? pos.nx : (a.nx != null ? a.nx : null);
+    const wantY = pos ? pos.ny : (a.ny != null ? a.ny : null);
+    // 宽度：用户显式缩过（nw>0）就听他的，否则用当前列宽。
+    // 但**必须再夹一次**：自动摆放的不能宽过一列，否则它会越出便签道压到线索栏上
+    // （实测：遗留的 nw=232 在只需要 172 宽的两列布局里，右边多出 60px 直接压住侧栏）。
+    // 绝不继承上一次渲染量到的宽度——那会让渲染结果依赖历史，而不是依赖状态。
+    const wRaw = (pos && pos.nw) || (a.nw > 0 ? a.nw : autoW);
+    let w = Math.min(wRaw, wantX != null ? laneW : autoW);
+    const h = (pos && pos.nh) || a.h || a.nh || 0;
+
+    // 先插进去量真实高度：便签高度取决于文字折行和参考条数量，估不准。
+    const note = buildNote(a, b.left, b.top, w, h, a.nz || 0);
+    layer.appendChild(note);
+    let measured = note.getBoundingClientRect().height;
+
+    let keep = false;
+    if (wantX != null && wantY != null) {
+      // 用户摆过的位置**一律原地保留**，不做避让判定。
+      //
+      // 这里原来是"只要不和别人叠在一起就保留"，叠了就回落到自动摆放。后果是级联的：
+      // 你把一张便签拖到别人身上 → 它被判成"撞了" → 重新自动摆放 → 那一列的游标变了
+      // → 排在它后面的自动便签跟着挪。用户看到的就是
+      // "移动到其他便签后面会导致其他便签随机重排"。
+      //
+      // 便签本来就允许叠——叠在一起时靠层级决定谁在上面（拖动的那张会提到最前）。
+      // 用户手摆的位置是意图，不是需要被"修正"的布局错误。
+      const ma = moveArea();
+      const c = clampNote(ma, wantX, wantY, w, measured);
+      note.style.left = c.x + "px";
+      note.style.top = c.y + "px";
+      keep = true;
+    }
+    if (!keep) {
+      // 放进当前最空的一列，然后用**实测矩形**一路往下让开障碍。
+      //
+      // 只靠每列的游标是不够的：用户摆过的那张宽度可能是整条便签道（跨两列），
+      // 它会同时挡住两列，而游标只知道"这一列到哪了"。所以这里改成"撞上谁就跑到谁下面"，
+      // 这样跨列的老便签也能被正确处理。
+      //
+      // 注意宽度要**改成列宽**：列位置 colX() 是按 autoW 算的，若还留着更宽的 w，
+      // 右边缘就会越出便签道压住线索栏（实测：172 的列里放 232 宽的便签，多出 60px）。
+      if (w !== autoW) {
+        note.style.width = autoW + "px";
+        w = autoW;
+        // 宽度变了高度就变了（字要重新折行），必须**重新量一次**：
+        // 用改宽度之前的高度去摆放，下一张就会被摆到这张身上，底部的也可能越出屏幕。
+        measured = note.getBoundingClientRect().height;
+      }
+      // 逐列试，按"游标最小优先"的顺序，取**第一个真的放得下**的列。
+      //
+      // 只挑游标最小的那列然后硬摆是错的：用户手摆过的便签宽度可能是整条道（跨列），
+      // 于是某个列虽然游标最小，它的横向范围却正好被那张宽便签压住。摆下去会撞，
+      // 撞了就往下载，载到底再夹回来——最后还是撞。实测就是这样在 1060x760 上
+      // 留了一对重叠，而**旁边的列其实是空的**。所以：撞了不算数，换一列再试。
+      const order = [];
+      for (let i = 0; i < cols; i++) order.push(i);
+      order.sort((p, q) => cursor[p] - cursor[q]);
+      let chosen = -1, cx = b.left, cy = b.top;
+      for (const ci of order) {
+        const x2 = colX(ci);
+        let y2 = cursor[ci];
+        for (let guard = 0; guard < 12; guard++) {
+          const bl = hitsRect(x2, y2, w, measured);
+          if (!bl) break;
+          y2 = bl.bottom + NOTE_GAP;
+        }
+        const yClamp = Math.min(y2, Math.max(b.top, b.bottom - measured));
+        if (!hitsRect(x2, yClamp, w, measured)) {
+          chosen = ci; cx = x2; cy = yClamp;
+          break;
+        }
+      }
+      if (chosen < 0) {
+        // 每一列都试过了还是放不下：摆到最空的一列并夹在可视区内，同时记下"溢出"，
+        // 让外面多开一列重来。真要三列也放不下，才会保留一个叠住的位置——
+        // 叠住至少还看得见、还能拖开，而跑出屏幕的便签用户再也抓不回来。
+        overflow = true;
+        chosen = order[0];
+        cx = colX(chosen);
+        cy = Math.min(cursor[chosen], Math.max(b.top, b.bottom - measured));
+      }
+      note.style.left = cx + "px";
+      note.style.top = cy + "px";
+      cursor[chosen] = cy + measured + NOTE_GAP;
+      // 记下来，等这一遍结束写回服务端：**自动摆放只做一次，之后位置就归这张便签自己。**
+      //
+      // 不写回的话每次渲染都会重算一遍，而"用户拖了别的便签"会改变计算结果——
+      // 于是别的便签跟着挪。用户的原话是"移动到其他便签后面会导致其他便签随机重排"。
+      // 上一版只保证"手摆的便签不动"，但**自动摆的便签仍然会动**，症状就换了个形式
+      // 回来（实测：把 A 拖到 B 身上，B 从第 2 列跳到第 1 列）。把首次摆放落盘之后，
+      // 所有便签都有了自己的坐标，谁也不会因为别人动了而挪位。
+      assigned.push({ id: a.id, nx: cx, ny: cy, nw: w, nz: a.nz || 0 });
+    } else {
+      const r = note.getBoundingClientRect();
+      const ci = colOf(r.left);
+      cursor[ci] = Math.max(cursor[ci], r.bottom + NOTE_GAP);
+    }
+    placed.push({ rect: note.getBoundingClientRect(), auto: !keep });
+  }
+  // "这一遍不合格"只算**自动摆放之间**的相撞。
+  //
+  // 用户手摆的便签互相叠着，是用户自己摆的，不该让整套自动布局重来一遍——
+  // 重来会改变列宽，于是所有自动便签一起挪位，看上去就是"其他便签随机重排"。
+  // 自动摆放之间相撞才是真的没摆好（那种情况多开一列就能解决）。
+  for (let i = 0; i < placed.length && !overflow; i++) {
+    if (!placed[i].auto) continue;
+    for (let j = i + 1; j < placed.length; j++) {
+      if (placed[j].auto && ovl(placed[i].rect, placed[j].rect)) {
+        overflow = true;
+        break;
+      }
+    }
+  }
+  return { placed: placed.map(p => p.rect), overflowed: overflow, assigned: assigned };
+  }
+}
+
+function buildNote(a, nx, ny, nw, nh, nz) {
+  const note = el("div", "note" + (a.done ? " done" : "") +
+    (S.selPlanId === a.id ? " active" : ""));
+  note.dataset.id = a.id;
+  note.dataset.kind = a.kind || "topic";
+  note.style.left = Math.max(0, nx) + "px";
+  note.style.top = Math.max(0, ny) + "px";
+  note.style.width = nw + "px";
+  if (nh) note.style.height = nh + "px";
+  note.style.zIndex = 10 + (nz || 0);
+
+  note.appendChild(el("div", "note-band"));
+
+  const head = el("div", "note-head");
+  head.appendChild(el("span", "note-grip", "⠿"));
+  // 标签：五个小色点，点一下换类别。
+  //
+  // 这里原来是"一个 10px 的小字，点一下循环到下一种"——用户的原话是"这套标签相当的难用"：
+  // 要选到想要的那个得点好几次，而且不知道下一个是什么。中间试过开一个专门的标签编辑
+  // 弹窗，用户又把弹窗否掉了（"我的发言计划其实最好不好搞弹出框"）。
+  // 现在是五个点平铺：一次点击到位，不弹窗、不循环。颜色本身就是类别，名字放在 title 里
+  // ——这也正是用户说的"同类的就同一种颜色就行了"。
+  const dots = el("div", "note-dots");
+  for (const k of Object.keys(PL_KINDS)) {
+    const dot = el("button", "note-dot" + (k === (a.kind || "topic") ? " on" : ""));
+    dot.style.background = "var(" + (PL_TOKENS[k] || "--term") + ")";
+    dot.style.color = "var(" + (PL_TOKENS[k] || "--term") + ")";
+    dot.title = PL_KINDS[k] + "（点一下把这张便签改成" + PL_KINDS[k] + "）";
+    dot.onclick = async ev => {
+      ev.stopPropagation();
+      await prepAction("update", { id: a.id, kind: k });
+      tick();
+    };
+    dots.appendChild(dot);
+  }
+  head.appendChild(dots);
+  head.appendChild(el("div", "spacer"));
+  // 变量名**不能**叫 tick：那会遮蔽外层的 tick() 刷新函数，于是"标记已办"和"删除便签"
+  // 两个按钮点下去都抛 "tick is not a function"——而且是运行时才炸，语法检查、渲染审计
+  // 都看不出来（只有真的点那个按钮才会触发）。同一个坑这个文件里踩过第二次了：
+  // PlanItem 的字段名曾经叫 list，遮蔽了内置 list()。
+  const doneBtn = el("button", "note-x note-done", a.done ? "↺" : "✓");
+  doneBtn.title = a.done ? "标记为未办" : "标记为已办";
+  doneBtn.onclick = async ev => {
+    ev.stopPropagation();
+    await fetch("/api/agenda/mark", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: a.id, done: !a.done }) });
+    tick();
+  };
+  head.appendChild(doneBtn);
+  const rm = el("button", "note-x note-del", "×");
+  rm.title = "删除这张便签";
+  rm.onclick = async ev => {
+    ev.stopPropagation();
+    await prepAction("remove", { id: a.id });
+    tick();
+  };
+  head.appendChild(rm);
+  note.appendChild(head);
+
+  const body = el("div", "note-body");
+  const topic = el("div", "note-topic", a.topic);
+  topic.contentEditable = "true";
+  topic.spellcheck = false;
+  topic.title = "双击可直接改字";
+  topic.onfocus = () => { S.selPlanId = a.id; };
+  topic.onblur = async () => {
+    const v = topic.textContent.trim();
+    if (v && v !== a.topic) await prepAction("update", { id: a.id, topic: v });
+  };
+  topic.onkeydown = e => {
+    // 便签里打字不能触发全局命令；Enter 结束编辑而不是插入换行。
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); topic.blur(); }
+    if (e.key === "Escape") { topic.textContent = a.topic; topic.blur(); }
+  };
+  body.appendChild(topic);
+
+  const meta = el("div", "note-meta");
+  if (a.detail) meta.appendChild(el("span", null, a.detail));
+  if (meta.children.length) body.appendChild(meta);
+
+  if (a.seg_id) {
+    const seg = [...S.segByIdx.values()].find(s => s.id === a.seg_id);
+    if (seg) {
+      const from = el("div", "note-from");
+      from.textContent = "来源发言：" + seg.text.slice(0, 60) +
+        (seg.text.length > 60 ? "…" : "");
+      from.onclick = ev => { ev.stopPropagation(); S.follow = false;
+        selectSeg(seg.idx, true); };
+      body.appendChild(from);
+    }
+  }
+
+  // 参考依据：钉在便签上的证据。仍然只是参考，不生成话术。
+  if ((a.refs || []).length) {
+    const wrap = el("div", "note-refs");
+    wrap.appendChild(el("div", "note-refs-h", `参考依据 ${a.refs.length}`));
+    a.refs.forEach((r, i) => {
+      const chip = el("div", "note-ref");
+      chip.appendChild(el("div", "note-ref-t", r.title || r.label || "资料"));
+      if (r.snippet) {
+        chip.appendChild(el("div", "note-ref-x", r.snippet.slice(0, 120) +
+          (r.snippet.length > 120 ? "…" : "")));
+      }
+      const rmv = el("button", "note-ref-rm", "×");
+      rmv.title = "移除这条参考";
+      rmv.onclick = async ev => {
+        ev.stopPropagation();
+        await prepAction("detach_ref", { id: a.id, index: i });
+        tick();
+      };
+      chip.appendChild(rmv);
+      wrap.appendChild(chip);
+    });
+    body.appendChild(wrap);
+  }
+  note.appendChild(body);
+
+  note.appendChild(el("div", "note-resize"));
+  makeNoteDraggable(note, a);
+  return note;
+}
+
+/** Every note's current z-index, so "bring to front" can be computed instead of guessed. */
+function noteZiIndexes() {
+  return [...document.querySelectorAll("#notes-layer .note")]
+    .map(n => parseInt(n.style.zIndex, 10))
+    .filter(v => Number.isFinite(v));
+}
+
+/** Drag from anywhere on the note, resize from the corner, raise on touch. Persist on release.
+ *
+ * 这一版修的是一个用户会立刻撞上、而测试自己绕开了的 bug。
+ *
+ * **症状**：拖着便签走，大约每一秒它自己弹回起点一次，所以"便签移动非常困难"——
+ * 手快一点还能挪过去，慢一点就永远到不了。
+ *
+ * **根因**：`renderNotes()` 每次轮询（约 1 秒）都会 `layer.textContent = ""` 重建整个便签层。
+ * 拖拽的处理函数抓着的是 pointerdown 那一刻的**旧元素**；重建之后那个元素已经不在页面上，
+ * 于是 `note.style.left = ...` 写进一个没人看得见的节点，而新画出来的那张按服务端存的
+ * 位置摆放——就是"弹回起点"。
+ *
+ * **为什么之前没被发现**：审计器**发现过**它，并把症状写进了注释
+ * （"每次 pointermove 都会重算目标位置…每步只累加一小段，实测 8 步只走了 512px"），
+ * 然后改成**只派发一步 pointermove** 让断言通过。真实鼠标每秒发几十个 pointermove，
+ * 于是测试恰好避开了用户必然遇到的那条路径。这是整个项目里最值得记的一次教训：
+ * **为了让测试变绿而缩小输入范围，等于把 bug 藏起来。**
+ *
+ * 修法两条：拖拽期间不重建便签层（renderNotes 提前返回）；拖拽结束由服务端位置说了算，
+ * 下一次重建把最终位置落回界面。另外把抓手从"顶部 24px 的窄条"扩到整张便签——
+ * 用户的第一反应是抓正文，而正文是 contentEditable，抓下去只会选中文字。
+ */
+function makeNoteDraggable(note, a) {
+  let mode = null, sx = 0, sy = 0, ox = 0, oy = 0, ow = 0, oh = 0;
+  let moved = false, downTarget = null;
+  const topicEl = note.querySelector(".note-topic");
+
+  const onDown = (ev, kind) => {
+    if (ev.button !== 0) return;
+    // 只在正文上阻止默认行为：正文是 contentEditable，不挡住的话按住就是选字。
+    // 别处**不能**无脑 preventDefault——在 Chromium 上取消 pointerdown 会让后续的
+    // click 不再派发，于是便签里"来源发言：…"这类可点的东西会突然点不动。
+    if (topicEl && topicEl.contains(ev.target)) ev.preventDefault();
+    ev.stopPropagation();
+    mode = kind;
+    moved = false;
+    downTarget = ev.target;
+    sx = ev.clientX; sy = ev.clientY;
+    ox = parseFloat(note.style.left) || 0;
+    oy = parseFloat(note.style.top) || 0;
+    ow = parseFloat(note.style.width) || NOTE_W;
+    oh = note.getBoundingClientRect().height;
+    // 把这一张提到最前面。
+    //
+    // 原来是 `note.style.zIndex = ++S.noteZ`，而 `S.noteZ` **从来没有初始化过**——
+    // `++undefined` 是 NaN，把 NaN 写进 zIndex 会被浏览器直接忽略，于是便签的层级
+    // 一动不动：拖动的那张永远埋在别人下面。用户的原话就是
+    // "我希望真正移动的那个便签是最前面的"。
+    // 先从当前所有便签里取最大层级，再加一，保证它一定在最上面。
+    S.noteZ = Math.max(S.noteZ || 0, ...noteZiIndexes());
+    note.style.zIndex = ++S.noteZ;
+    S.selPlanId = a.id;
+    S.dragId = a.id;      // 拖拽期间 renderNotes 直接返回，不再重建这一层
+    note.classList.add("active");
+    document.body.style.userSelect = "none";
+    // 指针捕获：拖出窗口再松手也能收到 pointerup。
+    // 合成事件（测试派发的）没有真实指针，setPointerCapture 会抛错，忽略即可。
+    try { note.setPointerCapture(ev.pointerId); } catch (e) { /* 合成事件 */ }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
+
+  const onMove = ev => {
+    if (!mode) return;
+    const dx = ev.clientX - sx, dy = ev.clientY - sy;
+    if (Math.abs(dx) + Math.abs(dy) > 4 && !moved) {
+      moved = true;
+      // 开始真的拖了：把可能已经拉出来的文字选区清掉。
+      // 用"移动之后清"代替"按下就 preventDefault"，是为了不误伤便签里的点击。
+      try { window.getSelection().removeAllRanges(); } catch (e) { /* 无所谓 */ }
+    }
+    if (mode === "move") {
+      // 夹在**整个工作区**里，不夹在便签道里。
+      //
+      // 这是"不跟手"的真正原因：便签道只有中栏右侧约一半宽，一张 232 宽的便签在里面
+      // 横向只剩两百多像素的自由，贴在边上时往左/往上更是**可用空间为 0**——
+      // 指针在动、便签不动，用户看到的就是"不跟手"。范围被限制和不跟手，是同一件事。
+      const c = clampNote(moveArea(), ox + dx, oy + dy, ow, oh);
+      note.style.left = c.x + "px";
+      note.style.top = c.y + "px";
+    } else {
+      const ma = moveArea();
+      note.style.width = Math.max(150, Math.min(ma.right - ma.left, ow + dx)) + "px";
+      note.style.height = Math.max(90, oh + dy) + "px";
+    }
+  };
+
+  const enterEdit = ev => {
+    if (!topicEl) return;
+    topicEl.focus();
+    // 顺手把光标放到点下去的位置：不移动的单击 = 开始改字，这是便签最自然的用法。
+    try {
+      const r = document.caretRangeFromPoint &&
+        document.caretRangeFromPoint(ev.clientX, ev.clientY);
+      if (r && topicEl.contains(r.startContainer)) {
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+      }
+    } catch (e) { /* 只聚焦也行 */ }
+  };
+
+  const onUp = async ev => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onUp);
+    document.body.style.userSelect = "";
+    if (!mode) return;
+    const wasMode = mode;
+    mode = null;
+    S.dragId = null;      // 松手后位置由服务端状态说了算，渲染恢复幂等
+    try { note.releasePointerCapture(ev && ev.pointerId); } catch (e) { /* 同上 */ }
+    // 没移动 = 单击：落在正文上就进入编辑，落在别处就只是选中这张便签。
+    if (!moved) {
+      if (wasMode === "move" && ev && topicEl && downTarget &&
+          topicEl.contains(downTarget)) {
+        enterEdit(ev);
+      }
+      return;             // 没动过就不用写盘
+    }
+    // 只在松手时写盘：拖拽每秒产生几十个位置，每次写盘会重写整个会话文件。
+    await fetch("/api/prep/layout", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [{
+        id: a.id, nx: parseFloat(note.style.left), ny: parseFloat(note.style.top),
+        nw: parseFloat(note.style.width),
+        nh: note.style.height ? parseFloat(note.style.height) : 0,
+        nz: parseInt(note.style.zIndex, 10),
+      }] }) });
+    tick();
+  };
+
+  // 整张便签都能抓，除了真正的控件。
+  note.addEventListener("pointerdown", ev => {
+    if (ev.target.closest("button, .note-resize")) return;
+    onDown(ev, "move");
+  });
+  note.querySelector(".note-resize").addEventListener("pointerdown", ev => onDown(ev, "resize"));
+  note.addEventListener("pointerdown", () => {
+    S.selPlanId = a.id;
+    S.noteZ = Math.max(S.noteZ || 0, parseInt(note.style.zIndex, 10) || 0);
+  });
+}
+
+function renderPlanList(cfg) {
+  const box = $(cfg.list);
+  const items = cfg.items || [];
+  $(cfg.count).textContent = items.length;
+  const root = $("#plan-agenda");
+  root.classList.toggle("open", !!S.agendaOpen);
+  $("#pa-toggle").textContent = S.agendaOpen ? "收起" : "展开";
+  box.textContent = "";
+
+  if (!items.length) {
+    box.appendChild(el("div", "pl-empty",
+      "还没有会议流程。点「导入」读主持人给的 docx / md / txt，或直接手写。"));
+  }
+
+  for (const a of items) {
+    const row = el("div", "pl-item" + (a.done ? " done" : "") + " " + (a.kind || "topic"));
+    const tickEl = el("div", "pl-tick");
+    tickEl.title = a.done ? "标记为未谈" : "标记为已谈";
+    tickEl.onclick = async ev => {
+      ev.stopPropagation();
+      await fetch("/api/agenda/mark", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: a.id, done: !a.done }) });
+      tick();
+    };
+    row.appendChild(tickEl);
+
+    const body = el("div", "pl-body");
+    // 议题可双击改名——导入的解析结果不可能百分之百准，必须能就地修。
+    const topic = el("div", "pl-topic", a.topic);
+    topic.title = "双击改名";
+    topic.ondblclick = async ev => {
+      ev.stopPropagation();
+      const v = prompt("修改内容：", a.topic);
+      if (v == null || !v.trim()) return;
+      const list = S.agenda.map(x => ({ id: x.id, topic: x.topic, kind: x.kind,
+        detail: x.detail, done: x.done, speaker: x.speaker, slot: x.slot }));
+      const hit = list.find(x => x.id === a.id);
+      if (hit) hit.topic = v.trim();
+      await fetch("/api/agenda", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: list }) });
+      tick();
+    };
+    body.appendChild(topic);
+
+    const meta = el("div", "pl-meta");
+    if (a.slot) meta.appendChild(el("span", "pl-slot", a.slot));
+    if (a.speaker) meta.appendChild(el("span", "pl-who", a.speaker));
+    if (a.detail) meta.appendChild(el("span", null, a.detail));
+    if (meta.children.length) body.appendChild(meta);
+    row.appendChild(body);
+
+    const rmv = el("button", "pl-rm", "×");
+    rmv.title = "删除";
+    rmv.onclick = async ev => {
+      ev.stopPropagation();
+      await fetch("/api/prep", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "remove", id: a.id }) });
+      tick();
+    };
+    row.appendChild(rmv);
+    box.appendChild(row);
+  }
+
+  // 手写加一项流程：agenda 是整表替换，所以带上现有项一起提交。
+  const add = el("div", "pl-add");
+  const inp = el("input");
+  inp.placeholder = "加一项流程…";
+  inp.spellcheck = false;
+  inp.onkeydown = async e => {
+    if (e.key !== "Enter" || !inp.value.trim()) return;
+    const list = S.agenda.map(x => ({ id: x.id, topic: x.topic, kind: x.kind,
+      detail: x.detail, done: x.done, speaker: x.speaker, slot: x.slot }));
+    list.push({ topic: inp.value.trim(), kind: "topic" });
+    await fetch("/api/agenda", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: list }) });
+    inp.value = "";
+    S.agendaOpen = true;
+    tick();
+  };
+  add.appendChild(inp);
+  box.appendChild(add);
+}
+
+async function prepAction(action, payload) {
+  const r = await fetch("/api/prep", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({ action }, payload)) });
+  const d = await r.json();
+  if (d.error) toast(d.error);
+  return d;
+}
+
+$("#pa-head").onclick = e => {
+  if (e.target.closest(".pl-btn")) return;      // 「导入」按钮自己处理
+  S.agendaOpen = !S.agendaOpen;
+  renderPlans();
+};
+$("#pa-toggle").onclick = e => { e.stopPropagation();
+  S.agendaOpen = !S.agendaOpen; renderPlans(); };
+
+// ── 导入（会议流程 / 发言计划稿）─────────────────────────────────────
+// 归属必须由用户亲口选，不能靠默认值猜。会议流程是"每次会议都不同的工作文档"，
+// 进了公共库就会去回答别的项目的问题，而且开完会就过期了；合同和资质反过来。
+// 上一版把这件事藏在一个默认值里，于是"导入默认进全局库"和"会议流程也要导入"
+// 撞成了同一个 bug。现在把它摆在面板上，两个选项各自写清后果。
+let impScope = "project";
+
+const IMP_SCOPES = [
+  ["project", "项目库", "会议流程、纪要、进度——每次会议都不同的工作文档。" +
+              "进项目库，不会跑去回答其它项目的问题"],
+  ["global", "公共库", "合同、资质、规范——真正共享的参考资料。" +
+             "进公共库后每个项目都能检索到"],
+  ["session", "仅本次会议", "只在这次会话里用，不写进任何知识库"],
+];
+
+function paintImportScopes() {
+  const box = $("#imp-scope");
+  box.innerHTML = "";
+  for (const [id, name, hint] of IMP_SCOPES) {
+    const lab = el("label", "st-opt" + (id === impScope ? " on" : ""));
+    const radio = el("input");
+    radio.type = "radio"; radio.name = "imp-scope"; radio.checked = id === impScope;
+    radio.onchange = () => { impScope = id; paintImportScopes(); };
+    const txt = el("div");
+    txt.appendChild(el("div", "st-opt-t", name));
+    txt.appendChild(el("div", "st-opt-h", hint));
+    lab.appendChild(radio); lab.appendChild(txt);
+    box.appendChild(lab);
+  }
+}
+
+function openImport(title, defPath) {
+  $("#imp-title").textContent = title;
+  $("#imp-path").value = defPath || "";
+  $("#imp-msg").textContent = "";
+  $("#imp-msg").className = "st-msg";
+  const pdir = (S.corpora && S.corpora.project_dir) || "";
+  $("#imp-hint").textContent = pdir
+    ? "当前项目：" + pdir
+    : "本次启动没有指定项目文件夹，只能选「公共库」或「仅本次会议」";
+  impScope = "project";
+  // 没挂项目时"项目库"不是一个真实去处，别让用户选了一个不存在的目标
+  if (!pdir) impScope = "global";
+  paintImportScopes();
+  $("#imp-ok").disabled = false;
+  $("#imp").classList.add("on");
+  setTimeout(() => $("#imp-path").focus(), 30);
+}
+function closeImport() { $("#imp").classList.remove("on"); }
+
+$("#imp-cancel").onclick = closeImport;
+$("#imp").onclick = e => { if (e.target.id === "imp") closeImport(); };
+$("#imp-path").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); $("#imp-ok").onclick(); }
+  if (e.key === "Escape") { closeImport(); }
+});
+
+$("#imp-ok").onclick = async () => {
+  const path = $("#imp-path").value.trim();
+  const msg = $("#imp-msg");
+  if (!path) { msg.className = "st-msg bad"; msg.textContent = "先填文件路径"; return; }
+  $("#imp-ok").disabled = true;
+  msg.className = "st-msg"; msg.textContent = "正在解析…";
+  let d;
+  try {
+    d = await (await fetch("/api/agenda/import", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, scope: impScope }) })).json();
+  } catch (err) {
+    msg.className = "st-msg bad"; msg.textContent = "请求失败：" + err;
+    $("#imp-ok").disabled = false;
+    return;
+  }
+  if (d.error) {
+    msg.className = "st-msg bad";
+    msg.textContent = d.error + (d.note ? "（" + d.note + "）" : "");
+    $("#imp-ok").disabled = false;
+    return;
+  }
+  S.agendaOpen = true;
+  closeImport();
+  // 说清"文件去了哪、有没有进库"——用户下一步要去 Obsidian 里找它，
+  // 或者要确认它没污染别的项目，这两件事都不能靠猜。
+  const ix = d.indexed;
+  let extra = "";
+  if (ix && ix.ok && ix.indexed) {
+    extra = `，已入${ix.kb}库（+${ix.added} 新增 / ${ix.chunks} 段）→ ${ix.copied_to}`;
+  } else if (ix && ix.ok) {
+    extra = `，已复制到 ${ix.copied_to}（${ix.note || "未入库"}）`;
+  } else if (ix && ix.error) {
+    extra = `，但入库失败：${ix.error}`;
+  } else {
+    extra = "，仅本次会议，未入库";
+  }
+  toast(`导入 ${d.count} 项流程${extra}`, 5200);
+  tick();
+};
+
+$("#pa-import").onclick = e => {
+  e.stopPropagation();
+  openImport("导入会议流程",
+    "E:\\markdown\\meeting-assistant\\data\\outlines\\meeting-outline.docx");
+};
+
+// ── 设置 ────────────────────────────────────────────────────────────
+// 五节的划分跟着"谁能替换"走，而不是跟着代码结构走：
+//   · 语音识别 / 检索 —— 内置，不可替换。列出来是为了能自查状态，不是为了配路径。
+//   · 大模型 —— 可选，指哪打哪。缺了它助手降级而不是瘫痪，所以交给用户选。
+//   · 知识库 / 界面 —— 属于本机环境。
+const ST_SECTIONS = [
+  { id: "asr", name: "语音识别", sub: "内置 · 不联网", hk: "asr",
+    intro: "转写是这台软件的输入来源，所以它<b>内置且不依赖网络</b>——" +
+           "它的使用场景正是一间可能没有外网的会议室。" },
+  { id: "embedding", name: "检索", sub: "内置 · 不联网", hk: "embedding",
+    intro: "嵌入模型把发言和资料变成可检索的向量。它<b>随软件提供</b>：" +
+           "索引是离线建好落盘的，几年后也必须能复现，不能依赖任何订阅。" },
+  { id: "llm", name: "大模型", sub: "可选 · 接你手上的服务", hk: "llm",
+    intro: "大模型只做两件增强：从发言里抽关键词、给线索分类。" +
+           "<b>缺了它会降级，不会瘫痪</b>——规则分类照常工作。" +
+           "所以它最适合指向你已经有的东西：本机 llama.cpp，或任意 OpenAI 兼容接口。" },
+  { id: "corpora", name: "知识库", sub: "项目库与公共库", hk: null,
+    intro: "分两个库的理由是<b>生命周期</b>，不是性能：公共库装合同、资质、规范，" +
+           "很少变；项目库装纪要、进度，每开一次会就长一截。" +
+           "项目库索引放在项目文件夹里，所以整个文件夹自带知识。" },
+  { id: "ui", name: "界面", sub: "本机", hk: null, intro: "" },
+];
+
+// 枚举型字段给选择框而不是文本框：手打 "bge-small-zh" 打错一个字母，
+// 报错要等到索引建完才出现，而那时已经晚了。
+const ST_OPTS = {
+  "llm.provider": [["openai_compatible", "OpenAI 兼容接口（llama.cpp / vLLM / DeepSeek / OpenAI）"],
+                   ["claude_cli", "本机 claude 命令行"],
+                   ["none", "关闭（只用规则分类）"]],
+  "embedding.backend": [["bge-small-zh", "bge-small-zh · 中文够用 · 23.9MB"],
+                        ["bge-m3", "bge-m3 · 多语言 · 568MB"]],
+  "asr.engine": [["funasr", "FunASR · Paraformer 流式 + 离线二遍（默认）"],
+                ["firered", "FireRedASR2S · AED + 流式 VAD + BERT 标点（更准 · 需 GPU · 约 5GB）"]],
+  "asr.device": [["cuda:0", "cuda:0（显卡）"], ["cpu", "cpu"]],
+  "ui.theme": [["dark", "暗色（主打）"], ["light", "亮色"]],
+};
+
+// 这些是在服务启动时加载的（ASR 模型 / 嵌入索引 / 知识库），改完必须重启才生效；
+// 其余（大模型走环境变量、主题存浏览器）改完立即生效。分开提示，别让用户以为
+// "切了引擎没反应 = 坏了"。
+// **这份清单的唯一出处是 scripts/meeting/settings.py 的 RESTART_KEYS**，由
+// /api/settings 回传（不再在这里抄一份，免得两边漂移）。
+let ST_RESTART_KEYS = new Set();
+
+let ST = null, stSection = "asr", stPending = {};
+
+async function openSettings() {
+  $("#settings").classList.add("on");
+  $("#st-msg").className = "st-msg";
+  $("#st-msg").textContent = "正在读取…";
+  await reloadSettings();
+}
+function closeSettings() {
+  $("#settings").classList.remove("on");
+  stPending = {};
+}
+
+async function reloadSettings() {
+  try {
+    ST = await (await fetch("/api/settings")).json();
+  } catch (err) {
+    $("#st-msg").className = "st-msg bad";
+    $("#st-msg").textContent = "读取设置失败：" + err;
+    return;
+  }
+  // 需要重启才生效的键由服务端给（settings.py 的 RESTART_KEYS，唯一出处）
+  ST_RESTART_KEYS = new Set(ST.restart_keys || []);
+  stPending = {};
+  paintSettingsTabs();
+  paintSettings();
+  $("#st-restart").hidden = true;
+  $("#st-msg").textContent = "";
+}
+
+function paintSettingsTabs() {
+  const box = $("#st-tabs");
+  box.innerHTML = "";
+  for (const sec of ST_SECTIONS) {
+    const b = el("button", "st-tab" + (sec.id === stSection ? " on" : ""));
+    // 只有真有健康检查的节才画圆点。知识库和界面没有可查的后端，
+    // 给它们一个灰点会读成"这一节有问题/未检查"，而其实是"没什么可查的"。
+    const hk = stHealthClass(sec.hk);
+    if (hk) b.appendChild(el("span", "st-dot" + hk));
+    b.appendChild(el("span", null, sec.name));
+    b.onclick = () => { stSection = sec.id; paintSettingsTabs(); paintSettings(); };
+    box.appendChild(b);
+  }
+}
+
+function stHealthClass(hk) {
+  if (!hk || !ST || !ST.health || !ST.health[hk]) return "";
+  return ST.health[hk].ok ? " ok" : " bad";
+}
+
+function markDirty(key, value) {
+  stPending[key] = value;
+  $("#st-msg").className = "st-msg";
+  $("#st-msg").textContent = `${Object.keys(stPending).length} 项待保存`;
+}
+
+function stField(row) {
+  const key = row.key;
+  const opts = ST_OPTS[key];
+  let input;
+  if (opts) {
+    input = el("select", "st-in");
+    const vals = opts.map(o => o[0]);
+    // 当前值不在候选里就把它补进去，绝不静默改写用户已有的值
+    const list = vals.includes(String(row.value))
+      ? opts : [[String(row.value), String(row.value) + "（当前值）"]].concat(opts);
+    for (const [v, label] of list) {
+      const o = el("option", null, label);
+      o.value = v;
+      input.appendChild(o);
+    }
+    input.value = String(row.value);
+    input.onchange = () => { input.classList.add("dirty"); markDirty(key, input.value); };
+  } else if (row.type === "bool") {
+    const wrap = el("label", "st-chk");
+    input = el("input");
+    input.type = "checkbox";
+    input.checked = !!row.value;
+    const state = el("span", null, input.checked ? "已开启" : "已关闭");
+    input.onchange = () => {
+      state.textContent = input.checked ? "已开启" : "已关闭";
+      markDirty(key, input.checked);
+    };    wrap.appendChild(input); wrap.appendChild(state);
+    return wrap;
+  } else {
+    input = el("input", "st-in");
+    input.type = row.type === "secret" ? "password" : (row.type === "int" ? "number" : "text");
+    input.spellcheck = false;
+    if (row.type === "secret") {
+      // 密钥不回传，所以格子永远是空的。留空 = 不改 —— 用户只是来改超时时间时，
+      // 不能把一把好用的 key 顺手抹掉。
+      input.value = "";
+      input.placeholder = row.is_set ? "已设置 · 留空表示不改" : "未设置";
+      input.autocomplete = "new-password";
+    } else {
+      input.value = row.value == null ? "" : row.value;
+    }
+    input.oninput = () => {
+      input.classList.add("dirty");
+      markDirty(key, input.value);
+    };
+    return input;
+  }
+  // 初画一律不加 .dirty —— 高亮表示"改过了"，一打开就满屏高亮等于没有提示
+  return input;
+}
+
+function paintSettings() {
+  const sec = ST_SECTIONS.find(s => s.id === stSection) || ST_SECTIONS[0];
+  $("#st-title").textContent = sec.name;
+  $("#st-sub").textContent = sec.sub || "";
+  const h = sec.hk && ST.health ? ST.health[sec.hk] : null;
+  const tag = $("#st-state");
+  tag.className = "st-tag" + (h ? (h.ok ? " ok" : " bad") : "");
+  tag.textContent = h ? (h.ok ? "可用" : "不可用") : "";
+
+  const body = $("#st-body");
+  body.innerHTML = "";
+
+  if (sec.intro) {
+    const note = el("div", "st-note");
+    note.innerHTML = sec.intro;
+    body.appendChild(note);
+  }
+  // 健康状态放在最上面，因为用户打开设置最想问的就是"它现在能不能用"。
+  // check() 是真的去看了模型目录 / 配置完整性，不是读一个布尔值。
+  if (h && !h.ok) {
+    const warn = el("div", "st-note warn");
+    warn.innerHTML = "<b>不可用：</b>" + esc(h.detail || "");
+    body.appendChild(warn);
+  } else if (h && h.detail) {
+    const ok = el("div", "st-note");
+    ok.innerHTML = esc(h.detail);
+    body.appendChild(ok);
+  }
+
+  // 知识库一节先摆"本次会话实际在用哪个库"——因为下面那几行是可改的路径，
+  // 而改完要重启才生效。不说清这一点，用户会以为改了没反应是坏了。
+  if (sec.id === "corpora" && ST.corpora) {
+    const kv = el("div", "st-kv");
+    const rows = [
+      ["项目", ST.corpora.project_name || "（未指定）"],
+      ["项目文件夹", ST.corpora.project_dir || "（未指定，本次不建项目库）"],
+      ["项目库索引", ST.corpora.project_db || "—"],
+      ["公共库索引", ST.corpora.global_db || "—"],
+      ["公共库语料", ST.corpora.global_kb || "—"],
+    ];
+    for (const [k, v] of rows) {
+      const line = el("div");
+      line.appendChild(el("i", null, k));
+      line.appendChild(document.createTextNode(v));
+      kv.appendChild(line);
+    }
+    body.appendChild(kv);
+    const warn = el("div", "st-note warn");
+    warn.innerHTML = "下面几行改动<b>需要重启服务才生效</b>——知识库是在启动时打开的，" +
+                     "换了路径不会中途换库。";
+    body.appendChild(warn);
+  }
+
+  // 界面这一节本来是"主题"这类本地偏好，但要在这里放一个「再看一遍使用引导」的入口：
+  // 引导只自动弹一次，第一次没看清、或者换个人用这台机器，就必须有个地方能找到它，
+  // 否则"只弹一次"等于"永远回不去"。控件照抄上面通用行的三层结构（标签 / 控件 / 提示），
+  // 免得又多出一种行样式。
+  if (sec.id === "ui") {
+    const gRow = el("div", "st-row");
+    gRow.dataset.key = "ui.guide";
+    const gCell = el("div");
+    const gBtn = el("button", "btn ghost", "再看一遍使用引导");
+    gBtn.onclick = () => { closeSettings(); openGuide(); };
+    gCell.appendChild(gBtn);
+    gRow.appendChild(el("div", "st-lab", "使用引导"));
+    gRow.appendChild(gCell);
+    gRow.appendChild(el("div", "st-hint",
+      "第一次打开界面时自动出现一次；这里可以随时再看。按 ? 只弹快捷键提示。"));
+    body.appendChild(gRow);
+  }
+
+  const rows = (ST.settings.groups || {})[sec.id] || [];
+  for (const row of rows) {
+    const r = el("div", "st-row");
+    // data-key 让自动化能按设置项定位到行，而不是靠中文标签做字符串匹配——
+    // 改一次文案就断的测试，等于没有测试。
+    r.dataset.key = row.key;
+    const lab = el("div", "st-lab", row.label);
+    r.appendChild(lab);
+    r.appendChild(stField(row));
+    const bits = [];
+    if (row.hint) bits.push(row.hint);
+    if (row.source) bits.push("来源：" + row.source);
+    if (bits.length) {
+      const hint = el("div", "st-hint");
+      hint.innerHTML = esc(bits.join(" · "));
+      r.appendChild(hint);
+    }
+    body.appendChild(r);
+  }
+
+  $("#st-path").textContent = ST.settings.exists ? "已保存到 settings.json" : "尚未保存过";
+  $("#st-path").title = ST.settings.path || "";
+}
+
+async function saveSettings() {
+  const keys = Object.keys(stPending);
+  const msg = $("#st-msg");
+  if (!keys.length) { msg.className = "st-msg"; msg.textContent = "没有改动"; return; }
+  $("#st-save").disabled = true;
+  msg.className = "st-msg"; msg.textContent = "正在保存…";
+  try {
+    const r = await fetch("/api/settings", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ set: stPending }) });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    ST = { settings: d.settings, health: d.health, corpora: ST.corpora,
+           restart_keys: d.restart_keys || ST.restart_keys,
+           managed: !!d.managed };
+    stPending = {};
+    paintSettingsTabs();
+    paintSettings();
+    if (d.errors && d.errors.length) {
+      msg.className = "st-msg bad";
+      msg.textContent = "部分未保存：" + d.errors.join("；");
+    } else {
+      msg.className = "st-msg ok";
+      // 大部分设置（大模型/主题）改完立即生效；但 ASR 引擎、模型目录、嵌入、知识库
+      // 是启动时加载的，改完必须重启。诚实地分开说，别让用户以为"没反应 = 坏了"。
+      const restarts = d.changed.filter(c => ST_RESTART_KEYS.has(c.key));
+      if (restarts.length) {
+        const names = restarts.map(c => c.key.split(".")[1]).join("、");
+        const canRestart = !!(ST.managed || S.managed);
+        msg.textContent = `已保存 ${d.changed.length} 项 · ${names} 需重启服务后生效` +
+          (canRestart ? "" : "（本次不是启动器启动的，请手动重启）");
+        // 由启动器托管时，给一个按钮直接重启——否则用户只能关掉整个应用重开
+        $("#st-restart").hidden = !canRestart;
+      } else {
+        // "立即生效"是有依据的：服务端把设置写进 os.environ，而 llm_client 读的就是它，
+        // 所以下一次调用就用新值，不用重启。
+        msg.textContent = `已保存 ${d.changed.length} 项，立即生效（无需重启）`;
+        $("#st-restart").hidden = true;
+      }
+      // 主题是本机偏好，存在浏览器里；服务端存了一份是为了换台机器也带走
+      if (d.changed.some(c => c.key === "ui.theme")) {
+        const t = (ST.settings.groups.ui || []).find(x => x.key === "ui.theme");
+        if (t && t.value !== currentTheme()) applyTheme(t.value);
+      }
+    }
+  } catch (err) {
+    msg.className = "st-msg bad";
+    msg.textContent = "保存失败：" + err;
+  } finally {
+    $("#st-save").disabled = false;
+  }
+}
+
+$("#btn-settings").onclick = openSettings;
+$("#st-close").onclick = closeSettings;
+$("#st-save").onclick = saveSettings;
+
+// 「重启服务」：进程没法重启自己（ASR 模型、嵌入后端、知识库都是启动时加载的），
+// 所以请启动器代劳——服务端写一个标记文件，启动器把子进程重启一遍。
+// 期间界面会短暂连不上，这里会显示"服务暂时不可用"，恢复后自己接上（见 boot）。
+$("#st-restart").onclick = async () => {
+  const msg = $("#st-msg");
+  const btn = $("#st-restart");
+  btn.disabled = true;
+  msg.className = "st-msg";
+  msg.textContent = "正在重启服务…（模型重新加载，约 20–90 秒）";
+  try {
+    const d = await (await fetch("/api/restart", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: "{}" })).json();
+    if (d.error) throw new Error(d.error);
+    msg.textContent = "已请求重启：界面恢复后会自动接上，模型加载期间录音按钮不可用";
+    toast("正在重启服务…（ASR 模型重新加载中）", 6000);
+  } catch (err) {
+    msg.className = "st-msg bad";
+    msg.textContent = "重启失败：" + err;
+  } finally {
+    btn.disabled = false;
+  }
+};
+$("#settings").onclick = e => { if (e.target.id === "settings") closeSettings(); };
+
+// ── 发言计划：输入框直接生成便签 ─────────────────────────────────────
+// 这里原来是一个弹窗编辑器（列出发言计划、点标签、调顺序）。用户否掉了它：
+// "我的发言计划其实最好不好搞弹出框，容易造成麻烦。其实最好是自己做个输入框，
+//  输入文字后自己点击新便签生成。"
+//
+// 理由是对的：写要点是开会时反复做的小动作，弹窗要多一次开关、要点外面才看得见自己
+// 刚写的东西。现在就是条上这个输入框——打字、回车、便签出现在发言流右侧。
+//
+// 标签改到便签自己身上：头部的五个小色点，点一下换个类别。不弹窗、不循环点。
+// 顺序不再手工排——便签按你摆的位置说话，位置本身就是顺序。
+
+async function addNoteFromInput() {
+  const box = $("#pp-input");
+  const text = (box.value || "").trim();
+  if (!text) {
+    toast("先写一条要点，再点「＋ 新便签」", 2600);
+    box.focus();
+    return;
+  }
+  const d = await (await fetch("/api/prep", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "add", topic: text }) })).json();
+  if (d.error) { toast(d.error, 3600); return; }
+  box.value = "";
+  await tick();
+  box.focus();
+  // 新便签出现在便签道里，直接让它显示出来（便签被隐藏时自动打开）
+  if (S.notesHidden) { toggleNotes(); }
+  toast("已新建便签：" + text.slice(0, 18) + (text.length > 18 ? "…" : ""), 2200);
+}
+
+$("#pp-add").onclick = addNoteFromInput;
+$("#pp-input").addEventListener("keydown", e => {
+  // 输入框里的按键不要冒泡到全局快捷键（那里有 Alt 组合和单键）
+  e.stopPropagation();
+  if (e.key === "Enter") { e.preventDefault(); addNoteFromInput(); }
+});
+
+// 重排：把便签交回自动布局。窗口改过大小之后旧坐标会挤在边上，这是唯一的出口。
+$("#pp-reset").onclick = async () => {
+  const d = await (await fetch("/api/prep/layout", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "reset" }) })).json();
+  if (d.error) { toast(d.error, 3000); return; }
+  await tick();
+  toast(`已重排 ${d.reset} 张便签`, 2600);
+};
+
+// 读文件：在 Obsidian 里改过 <项目>/发言计划.md 之后，把改动读回来。
+$("#pp-reload").onclick = async () => {
+  const d = await (await fetch("/api/plan", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "reload" }) })).json();
+  if (!d.ok) { toast(d.error || "读取失败", 3600); return; }
+  await tick();
+  toast("已从文件读回 " + d.items + " 条发言计划", 3200);
+};
+
+// ── 统一指针拖拽 ────────────────────────────────────────────────────
+// 两种拖拽来源，落点语义不同：
+//   发言流的一段   -> "我要讲这件事"      -> 新建一张便签
+//   右栏的一条参考 -> "我讲这个时有依据"  -> 附到某张便签上当参考
+// 第二条是关键：领导临时问"这个按钮为什么这么设计"，把检索到的合同条款钉到便签上，
+// 但**怎么组织语言仍然是用户自己的事**。所以参考只做证据，不生成话术。
+//
+// 为什么不用 HTML5 拖拽（dragstart/drop）：第一版用它是错的，用户实测"拖拽都非常难"。
+// 原因有三，都是 HTML5 拖拽的固有毛病：
+//   · 必须拖过系统阈值才真正开始，短距离拖动毫无反应，手感发飘；
+//   · 拖影是浏览器生成的半透明快照，位置和样式都不受控，落点不明确；
+//   · 落点判断依赖目标元素触发 dragover，便签层 pointer-events:none 时经常收不到事件。
+// 换成 pointerdown/pointermove/pointerup 后：立即响应、提示跟手、落点自己算。
+// 便签拖动本来就是指针实现，现在三种拖拽共用同一套机制，手感一致。
+let dragState = null;      // {kind:'seg'|'ref', idx, ref, ghost, card}
+
+function beginDrag(ev, kind, payload) {
+  if (ev.button !== 0) return;
+  ev.preventDefault();
+  // 不 setPointerCapture：拖拽目标是"指针下方的元素"，捕获会把事件全锁在源元素上。
+  dragState = Object.assign({ kind }, payload, { ghost: null, el: null });
+  document.body.style.userSelect = "none";
+  window.addEventListener("pointermove", onDragMove);
+  window.addEventListener("pointerup", onDragUp);
+}
+
+function onDragMove(ev) {
+  if (!dragState) return;
+  const d = dragState;
+  // 超过 4px 才算开始拖，避免"点一下选中"被误判成拖拽
+  if (!d.ghost) {
+    if (Math.hypot(ev.clientX - d.sx0, ev.clientY - d.sy0) < 4) return;
+    if (d.kind === "seg") {
+      const s = S.segByIdx.get(d.idx);
+      d.ghost = makeGhost("新建便签", s ? s.text.slice(0, 40) : "");
+      d.el = document.querySelector('#feed .utt[data-idx="' + d.idx + '"]');
+      d.el && d.el.classList.add("dragging");
+    } else {
+      d.ghost = makeGhost("作为参考钉到便签", (d.ref.title || "").slice(0, 40));
+      d.srcEl && d.srcEl.classList.add("dragging");
+    }
+  }
+  moveGhost(ev);
+
+  // 落点：指针下方是不是一张便签
+  const under = document.elementFromPoint(ev.clientX, ev.clientY);
+  const note = under && under.closest ? under.closest("#notes-layer .note") : null;
+  document.querySelectorAll(".note.refdrop").forEach(n => n.classList.remove("refdrop"));
+  if (note) {
+    note.classList.add("refdrop");
+    const it = S.prep.find(p => p.id === note.dataset.id);
+    setGhostText(d.kind === "ref"
+      ? "钉到「" + ((it ? it.topic : "")).slice(0, 12) + "」当参考"
+      : "拖到右边的「＋ 新便签」旁松手新建；或直接松手新建一张");
+  } else if (d.kind === "ref") {
+    setGhostText("松手：新建一张便签并附上这条参考");
+  } else {
+    setGhostText("松手：新建一张便签");
+  }
+}
+
+async function onDragUp(ev) {
+  window.removeEventListener("pointermove", onDragMove);
+  window.removeEventListener("pointerup", onDragUp);
+  document.body.style.userSelect = "";
+  const d = dragState;
+  dragState = null;
+  if (!d) return;
+  document.querySelectorAll(".dragging").forEach(n => n.classList.remove("dragging"));
+  document.querySelectorAll(".note.refdrop").forEach(n => n.classList.remove("refdrop"));
+  if (d.ghost) d.ghost.remove();
+  // 没超过阈值 = 一次点击，不是拖拽
+  if (!d.ghost) return;
+
+  const under = document.elementFromPoint(ev.clientX, ev.clientY);
+  const noteEl = under && under.closest ? under.closest("#notes-layer .note") : null;
+
+  if (d.kind === "seg") {
+    const seg = S.segByIdx.get(d.idx);
+    if (!seg) return;
+    const r = await prepAction("add", {
+      topic: seg.text.length > 28 ? seg.text.slice(0, 28) : seg.text,
+      detail: seg.speaker ? "相关发言人：" + seg.speaker : "",
+      seg_id: seg.id,
+      source: seg.text.slice(0, 80),
+      // 松在哪儿就摆哪儿——这是"可以在界面内随意拖放"的直接兑现
+      nx: Math.max(0, Math.min(innerWidth - 80, ev.clientX - 60)),
+      ny: Math.max(56, Math.min(innerHeight - 40, ev.clientY - 14)),
+    });
+    if (d.error) { toast(d.error, 3000); return; }
+    S.notesHidden = false;
+    $("#notes-layer").classList.remove("hidden");
+    toast("已新建一张便签");
+    tick();
+    return;
+  }
+
+  // 参考：优先钉到指针下的那张便签，否则钉到当前选中的，再否则新建一张承载它
+  const targetId = noteEl ? noteEl.dataset.id
+    : (S.prep.some(p => p.id === S.selPlanId) ? S.selPlanId : "");
+  const r2 = await prepAction("attach_ref", { id: targetId, ref: d.ref });
+  if (r2.error) { toast(r2.error, 3000); return; }
+  S.notesHidden = false;
+  $("#notes-layer").classList.remove("hidden");
+  const it = S.prep.find(p => p.id === (r2.item || {}).id);
+  toast(r2.created
+    ? "已新建一张便签并附上这条参考"
+    : "已钉到「" + ((it ? it.topic : "")).slice(0, 12) + "」当参考", 3000);
+  tick();
+}
+
+function makeGhost(title, sub) {
+  const g = el("div", "drag-ghost");
+  g.innerHTML = "<b>" + esc(title) + "</b>" + (sub ? "<small>" + esc(sub) + "</small>" : "");
+  document.body.appendChild(g);
+  return g;
+}
+function setGhostText(text) {
+  if (!dragState || !dragState.ghost) return;
+  const b = dragState.ghost.querySelector("b");
+  if (b) b.textContent = text;
+}
+function moveGhost(ev) {
+  const g = dragState && dragState.ghost;
+  if (!g) return;
+  g.style.left = Math.min(innerWidth - 40, ev.clientX + 14) + "px";
+  g.style.top = Math.min(innerHeight - 20, ev.clientY + 16) + "px";
+}
+
+// 发言段的拖拽柄：只有柄能起拖，所以整行文字仍可选中复制
+document.addEventListener("pointerdown", ev => {
+  const grip = ev.target.closest && ev.target.closest(".u-grip");
+  if (!grip) return;
+  const utt = grip.closest(".utt");
+  if (!utt) return;
+  beginDrag(ev, "seg", { idx: +utt.dataset.idx, sx0: ev.clientX, sy0: ev.clientY,
+                         srcEl: utt });
+});
+
+// 右栏检索卡 / 详情里的资料卡：整卡可拖
+document.addEventListener("pointerdown", ev => {
+  if (ev.target.closest && ev.target.closest("button")) return;
+  const card = ev.target.closest && ev.target.closest("[data-ref]");
+  if (!card) return;
+  let ref = null;
+  try { ref = JSON.parse(card.dataset.ref || "null"); } catch (_) { ref = null; }
+  if (!ref) return;
+  beginDrag(ev, "ref", { ref, sx0: ev.clientX, sy0: ev.clientY, srcEl: card });
+});
+
+// ── 右栏：线索 ──────────────────────────────────────────────────────
+function renderFilters() {
+  const box = $("#filters");
+  const counts = {};
+  for (const c of S.clues) counts[c.kind] = (counts[c.kind] || 0) + 1;
+  const order = Object.keys(S.types);
+  box.textContent = "";
+  // 只用颜色点，不写类型名——同色即同类。筛选项本来就该一眼扫过去，
+  // 而一排中文标签要逐个读完才知道有哪些类别。
+  const mk = (key, label, n, tone) => {
+    const b = el("span", "fchip" + (S.filter.has(key) ? " on" : ""));
+    const dot = el("i", "fdot");
+    if (tone) dot.dataset.tone = tone;
+    else dot.dataset.tone = "all";
+    b.appendChild(dot);
+    b.appendChild(el("span", null, label));
+    if (n) b.appendChild(el("span", "n", String(n)));
+    b.title = key ? (label + "（" + n + " 条）") : "显示全部";
+    b.onclick = () => {
+      if (!key) { S.filter.clear(); }
+      else if (S.filter.has(key)) S.filter.delete(key);
+      else S.filter.add(key);
+      renderFilters(); renderClues();
+    };
+    box.appendChild(b);
+  };
+  mk(null, "全部", S.clues.length, null);
+  for (const k of order) if (counts[k]) mk(k, "", counts[k], S.types[k].tone);
+}
+
+function renderClues() {
+  renderFilters();
+  const box = $("#clues");
+  let list = S.clues.slice();
+  if (S.filter.size) list = list.filter(c => S.filter.has(c.kind));
+  // 当前发言的线索排在最前：右栏的职责是佐证"这一句"，不是罗列全部历史。
+  const cur = S.selected != null ? S.segByIdx.get(S.selected) : null;
+  if (cur) {
+    list.sort((a, b) =>
+      (b.seg_id === cur.id ? 1 : 0) - (a.seg_id === cur.id ? 1 : 0));
+  }
+  box.textContent = "";
+  if (!list.length) {
+    box.innerHTML = '<div class="empty" style="padding:26px 12px">' +
+      (S.clues.length ? "该筛选下没有线索" : "还没有线索<br>识别到内容后会自动分类") + "</div>";
+    return;
+  }
+  for (const c of list) {
+    const card = el("div", "clue" + (c.pinned ? " pinned" : "") +
+      (S.detailFor === c.id ? " sel" : ""));
+    card.dataset.tone = c.meta.tone;
+    // 线索卡本身就可拖：把它拖进「我的发言计划」是把"这段有依据"钉下来的最直接方式。
+    card.dataset.ref = JSON.stringify({
+      title: (c.anchor || c.text || "").slice(0, 40),
+      snippet: c.text || "",
+      label: c.meta.label, rel: "线索", score: Math.round(c.confidence * 100) / 100,
+    });
+    const top = el("div", "c-top");
+    const kind = el("span", "c-kind badge " + c.meta.tone, c.meta.label);
+    top.appendChild(kind);
+    top.appendChild(el("span", "c-time", fmtT(c.t)));
+    if (c.actor) top.appendChild(el("span", "c-time", c.actor));
+    if (c.due) top.appendChild(el("span", "c-time", "期限 " + c.due));
+    const conf = el("span", "c-conf");
+    conf.innerHTML = `<span class="c-bar"><i style="width:${Math.round(c.confidence * 100)}%"></i></span>` +
+      Math.round(c.confidence * 100) + "%";
+    conf.title = "置信度（规则命中的日期/机构更确定，模型判断的意图较弱）";
+    top.appendChild(conf);
+    card.appendChild(top);
+    // 线索文案偶尔会把下一句的开头一起吞进来（"这个时间不能再往后退了软件部署调"），
+    // 那是 ASR 在保护带里把两段接上造成的，不是分类错误。卡片上只显示到能看懂为止，
+    // 完整文本放 tooltip——列表要能扫，详情里才需要完整。
+    const ctext = (c.text || "").trim();
+    const shown = ctext.length > 22 && c.anchor && ctext.includes(c.anchor)
+      ? c.anchor : ctext;
+    const ctextEl = el("div", "c-text", shown);
+    if (shown !== ctext) ctextEl.title = ctext;
+    card.appendChild(ctextEl);
+    const src = S.segments.find(x => x.id === c.seg_id);
+    if (src) {
+      const q = el("div", "c-src");
+      q.innerHTML = mdTerms(src.text, [c.anchor]);
+      card.appendChild(q);
+    }
+    const acts = el("div", "c-acts");
+    const pin = el("span", "c-act", c.pinned ? "取消置顶" : "置顶");
+    pin.onclick = async ev => { ev.stopPropagation();
+      await fetch("/api/clue", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: c.id, pinned: !c.pinned }) }); tick(); };
+    const retype = el("span", "c-act", "改类别");
+    retype.onclick = ev => { ev.stopPropagation(); cycleKind(c); };
+    const rm = el("span", "c-act danger", "删除");
+    rm.onclick = async ev => { ev.stopPropagation();
+      await fetch("/api/clue", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: c.id, action: "remove" }) }); tick(); };
+    acts.append(pin, retype, rm);
+    card.appendChild(acts);
+    card.onclick = () => openDetail(c);
+    box.appendChild(card);
+  }
+}
+
+function cycleKind(c) {
+  const keys = Object.keys(S.types);
+  const i = keys.indexOf(c.kind);
+  const next = keys[(i + 1) % keys.length];
+  fetch("/api/clue", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: c.id, kind: next }) }).then(tick);
+  toast("类别改为 " + S.types[next].label);
+}
+
+/** 把 Markdown **源码**渲染成可读结构——只用于展示片段。
+ *
+ * 为什么需要它：语料库里的文档都是 Markdown，佐证面板和悬浮框原来直接把源码贴出来，
+ * 于是屏幕上全是 `### 标题`、``` 代码围栏、`| a | b |` 表格行、`---` 分隔线——
+ * 用户的原话是"显示的都还是编辑状态的形式，阅读体验非常糟糕"。
+ *
+ * **只做块级结构 + 少量行内**，不做完整 Markdown：
+ *   ``` 围栏 → 代码块；| 表 | → 真表格；# 标题 → 小标题（不放大，面板里空间小）；
+ *   - / 1. 列表 → 列表；> 引用 → 引用块；**粗** `代码` [文字](链接) → 行内样式。
+ *
+ * 输入必须是**已经转义过**的文本（`markTerms` 的输出）。这里绝不再转义，
+ * 也绝不用 innerHTML 拼未转义的内容——语料来自用户的文档，不能当代码执行。
+ */
+/** 源文档里**内嵌的 HTML 表格** → 干净的真表格。
+ *
+ * 语料里的表格常常是这种（导出工具生成的，整个表格挤在一行）：
+ *   <table><tr><td rowspan=1 colspan=1>操作</td><td rowspan=1 colspan=1>方式</td></tr>…</table>
+ * 转义后就是用户看到的那一串 `&lt;td rowspan=1 colspan=1&gt;…`，非常影响阅读。
+ *
+ * 原则：**只认结构、丢掉属性**。`rowspan=1 colspan=1` 是导出噪声（等于没写），
+ * 留着只会让单元格挤成一团；样式一律不进（语料是用户文档，不执行它的样式）。
+ * 输入是**已转义**的文本，所以这里认的是 `&lt;td&gt;` 而不是 `<td>`。
+ */
+function mdInline(s) { return s
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<code class="md-code">$1</code>')
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '<span class="md-wl">$2</span>')
+    .replace(/\[\[([^\]]+)\]\]/g, '<span class="md-wl">$1</span>')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'); }
+
+function htmlTableToMd(s) {
+  const rows = s.match(/&lt;tr[\s\S]*?&lt;\/tr&gt;/gi) || [];
+  if (!rows.length) return "";
+  let html = '<table class="md-tbl">';
+  rows.forEach((row, ri) => {
+    const cells = [...row.matchAll(/&lt;t([dh])(?:\s[^&]*?)?&gt;([\s\S]*?)(?=&lt;\/t[dh]&gt;|$)/gi)];
+    if (!cells.length) return;
+    const tag = ri === 0 ? "th" : "td";
+    html += "<tr>" + cells.map(c => {
+      const text = c[2].replace(/&lt;br\s*\/?&gt;/gi, " ").replace(/\s+/g, " ").trim();
+      return "<" + tag + ">" + mdInline(text) + "</" + tag + ">";
+    }).join("") + "</tr>";
+  });
+  return html + "</table>";
+}
+
+function mdRender(html) {
+  let src = String(html == null ? "" : html);   // 表格预处理会重写它，故用 let
+  // **先把内嵌 HTML 表格抽出来**，用占位符代替，逐行处理完再放回去。
+  // 不这么做的话：这种表格通常**一整行**（导出工具不换行），会被当成一个段落，表格结构就没了。
+  const tables = [];
+  src = src.replace(/&lt;table[\s\S]*?&lt;\/table&gt;/gi, m => {
+    tables.push(htmlTableToMd(m));
+    return "\u0000T" + (tables.length - 1) + "\u0000";
+  });
+
+  const L = src.split(/\r?\n/);
+  const out = [];
+  let i = 0;
+  while (i < L.length) {
+    const line = L[i];
+    const ph = line.match(/^\u0000T(\d+)\u0000$/);
+    if (ph) { out.push(tables[+ph[1]] || ""); i++; continue; }
+    // 代码围栏：``` 开头到下一个 ```（围栏本身不显示）
+    if (/^\s*```/.test(line)) {
+      const buf = [];
+      i++;
+      while (i < L.length && !/^\s*```/.test(L[i])) { buf.push(L[i]); i++; }
+      i++;
+      out.push('<pre class="md-pre">' + buf.join("\n") + '</pre>');
+      continue;
+    }
+    // 表格：本行以 | 开头，且下一行是分隔行
+    if (/^\s*\|/.test(line) && i + 1 < L.length && /^\s*\|[\s:|-]+\|\s*$/.test(L[i + 1])) {
+      const cells = r => r.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(s => s.trim());
+      let t = '<table class="md-tbl"><thead><tr>' +
+        cells(line).map(c => '<th>' + mdInline(c) + '</th>').join("") + '</tr></thead><tbody>';
+      i += 2;
+      while (i < L.length && /^\s*\|/.test(L[i])) {
+        t += '<tr>' + cells(L[i]).map(c => '<td>' + mdInline(c) + '</td>').join("") + '</tr>';
+        i++;
+      }
+      out.push(t + '</tbody></table>');
+      continue;
+    }
+    // 标题：面板里空间小，用"小标题"而不是 h1~h3
+    const h = line.match(/^\s*(#{1,6})\s+(.*)$/);
+    if (h) { out.push('<div class="md-h md-h' + h[1].length + '">' + mdInline(h[2]) + '</div>'); i++; continue; }
+    // 分隔线
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { out.push('<hr class="md-hr">'); i++; continue; }
+    // 列表（连续的合并成一个 ul/ol）
+    const li = line.match(/^\s*([-*+]|\d+\.)\s+(.*)$/);
+    if (li) {
+      const ordered = /\d/.test(li[1]);
+      const items = [];
+      while (i < L.length) {
+        const m = L[i].match(/^\s*([-*+]|\d+\.)\s+(.*)$/);
+        if (!m) break;
+        items.push('<li>' + mdInline(m[2]) + '</li>');
+        i++;
+      }
+      out.push((ordered ? '<ol class="md-ul">' : '<ul class="md-ul">') + items.join("") +
+               (ordered ? '</ol>' : '</ul>'));
+      continue;
+    }
+    // 引用
+    // 引用。**文本已经转义**：`>` 到这里是 `&gt;`，只找 `>` 一条都匹配不到
+    // （单元检查抓到过：引用块计数为 0）。两种写法都认。
+    const qm = line.match(/^\s*(?:&gt;|>)\s?(.*)$/);
+    if (qm) {
+      const buf = [qm[1]];
+      i++;
+      while (i < L.length) {
+        const m2 = L[i].match(/^\s*(?:&gt;|>)\s?(.*)$/);
+        if (!m2) break;
+        buf.push(m2[1]);
+        i++;
+      }
+      out.push('<div class="md-q">' + mdInline(buf.join(" ")) + '</div>');
+      continue;
+    }
+    if (!line.trim()) { i++; continue; }
+    out.push('<p class="md-p">' + mdInline(line) + '</p>');
+    i++;
+  }
+  return out.join("");
+}
+
+/** 展示用：转义 + 标关键词 + 渲染 Markdown。展示片段一律走这个。 */
+function mdTerms(text, terms) {
+  return mdRender(markTerms(text, terms));
+}
+
+
+function markTerms(text, terms) {
+  let h = esc(text);
+  (terms || []).filter(Boolean).sort((a, b) => b.length - a.length).forEach(t => {
+    h = h.split(esc(t)).join(`<mark>${esc(t)}</mark>`);
+  });
+  return h;
+}
+
+// ── 详情：点击关键词/线索后的佐证面板 ───────────────────────────────
+async function openDetail(c) {
+  S.detailFor = c.id;
+  $("#detail").style.display = "";
+  $("#d-title").textContent = c.meta.label + " · 佐证";
+  $("#d-body").innerHTML = '<div class="empty">加载中…</div>';
+  renderClues();
+  try {
+    let d;
+    if (String(c.id).indexOf("term:") === 0) {
+      // 点关键词且**没有对应线索记录**时，前端造了个 `term:xxx` 临时对象走同一条
+      // 渲染路径；但服务端没有这条记录，`/api/clue` 必然 404 —— 用户看到的
+      // 就是"加载失败：clue not found"。改走 `/api/refine`：同一份语料证据，
+      // 只是没有线索元数据（来源发言本地就有，见下面的 _seg）。
+      const rr = await (await fetch(
+        "/api/refine?term=" + encodeURIComponent(c.anchor || ""))).json();
+      if (rr.error) throw new Error(rr.error);
+      d = { segment: c._seg || null, refs: rr.results || [], related: [] };
+    } else {
+      const r = await fetch("/api/clue?id=" + encodeURIComponent(c.id));
+      d = await r.json();
+      if (d.error) throw new Error(d.error);
+    }
+    const b = $("#d-body");
+    b.textContent = "";
+    if (d.segment) {
+      const sec = el("div", "d-sec");
+      sec.appendChild(el("div", "d-label", "来源发言 · " + fmtT(d.segment.start) +
+        (d.segment.speaker ? " · " + d.segment.speaker : "")));
+      const q = el("div", "d-quote");
+      q.innerHTML = mdTerms(d.segment.text, [c.anchor]);
+      sec.appendChild(q);
+      b.appendChild(sec);
+    }
+    if (d.refs && d.refs.length) {
+      const sec = el("div", "d-sec");
+      sec.appendChild(el("div", "d-label", "资料依据 · 可拖到「我的发言计划」当参考"));
+      for (const ref of d.refs) {
+        const card = el("div", "ref");
+        // 可拖 + 一键钉，两种方式做同一件事：拖适合"我知道要放到哪条"，
+        // 按钮适合"先收着"。都保留，因为两种时机都会发生。
+        card.dataset.ref = JSON.stringify(ref);
+        const h = el("div", "ref-h");
+        h.appendChild(el("span", "ref-t", ref.title));
+        if (ref.label) h.appendChild(el("span", "ref-l", ref.label));
+        h.appendChild(el("span", "ref-s", "相关度 " + (ref.score != null ? ref.score : "—")));
+        const pin = el("button", "ref-pin", "钉为参考");
+        pin.title = "加入「我的发言计划」。会附到当前选中的那条上；没选中则新建一条。";
+        pin.onclick = async ev => {
+          ev.stopPropagation();
+          const target = S.prep.some(p => p.id === S.selPlanId) ? S.selPlanId : "";
+          const r = await prepAction("attach_ref", { id: target, ref });
+          if (r.error) { toast(r.error, 3000); return; }
+          S.notesHidden = false;
+          const it = S.prep.find(p => p.id === (r.item || {}).id);
+          toast(r.created
+            ? `已新建计划项并附上参考`
+            : `已钉到「${(it ? it.topic : "").slice(0, 12)}」当参考`, 3000);
+          tick();
+        };
+        h.appendChild(pin);
+        card.appendChild(h);
+        const x = el("div", "ref-x");
+        x.innerHTML = mdTerms(ref.snippet || "", [c.anchor, c.actor, c.due]);
+        card.appendChild(x);
+        sec.appendChild(card);
+      }
+      b.appendChild(sec);
+    } else {
+      const sec = el("div", "d-sec");
+      sec.appendChild(el("div", "d-label", "资料依据"));
+      sec.appendChild(el("div", "hint", "资料库里没有直接匹配的条目。"));
+      b.appendChild(sec);
+    }
+    if (d.related && d.related.length) {
+      const sec = el("div", "d-sec");
+      sec.appendChild(el("div", "d-label", "同类线索"));
+      for (const rel of d.related) {
+        const card = el("div", "ref");
+        card.style.cursor = "pointer";
+        card.innerHTML = `<div class="ref-h"><span class="ref-t">${esc(rel.meta.label)}</span>` +
+          `<span class="ref-s">${fmtT(rel.t)}</span></div>` +
+          `<div class="ref-x">${esc(rel.text)}</div>`;
+        card.onclick = ev => { ev.stopPropagation(); openDetail(rel); };
+        sec.appendChild(card);
+      }
+      b.appendChild(sec);
+    }
+  } catch (e) {
+    $("#d-body").innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+// ── 悬浮卡：关键词摘要 ──────────────────────────────────────────────
+let hoverTimer = null, hoverTerm = null, refineCache = new Map();
+const pop = $("#pop");
+
+/** 统一的收起入口。
+ *
+ * 为什么要专门做一个函数：原来 `mouseout` 只取消了"**还没显示**"的定时器，
+ * 而**已经显示的框没人管**——于是它一直挂在屏幕上，直到鼠标划到另一个热词
+ * 才被替换掉（用户报的就是这个）。收起逻辑散在三处（mouseout / scroll / Esc）
+ * 时这类漏掉一个分支的 bug 很容易再犯，所以收拢成一个入口。
+ */
+function hidePop() {
+  clearTimeout(hoverTimer);
+  hoverTerm = null;
+  pop.style.display = "none";
+  document.querySelectorAll(".kw.on").forEach(x => x.classList.remove("on"));
+}
+
+document.addEventListener("mouseover", e => {
+  const k = e.target.closest && e.target.closest(".kw");
+  if (!k || k === hoverTerm) return;
+  clearTimeout(hoverTimer);
+  const term = k.dataset.term;
+  hoverTimer = setTimeout(() => showPop(k, term), 130);   // 划过不算
+});
+document.addEventListener("mouseout", e => {
+  const k = e.target.closest && e.target.closest(".kw");
+  if (!k) return;
+  // 只是在这个热词**内部**移动（比如从 <mark> 挪到相邻文本节点）不算离开。
+  // 不加这一条会闪：mouseout 会从子元素冒泡上来，框刚显示就被收掉。
+  if (e.relatedTarget && k.contains(e.relatedTarget)) return;
+  hidePop();                       // ← 缺的就是这一句
+});
+document.addEventListener("scroll", hidePop, true);
+// 鼠标移出整个窗口也要收（否则框会留在屏幕上，看着像卡住了）
+document.addEventListener("mouseleave", hidePop);
+
+/** hover 的内容：**出处 + 原文**，不做任何加工。
+ *
+ * 用户的要求：hover 给"没有任何加工处理的信息，最好只包含内容来源和简单上下文"。
+ * 所以这里刻意**不显示**：耗时（`12 ms` 是机器噪声，不是信息）、相关性得分、任何
+ * 机器写的概括。只给：哪份文件的哪一节（出处），以及那一处的**逐字原文**。
+ *
+ * 两级分工：hover 回答"这话从哪来"——必须是原文，让用户自己判断；
+ * click 回答"这话意味着什么"——加工放在那边（右栏证据包）。
+ *
+ * 按**文件**分组：同一文件命中三处时文件只写一次，下面列三节——读起来像
+ * "引自哪份文档的哪几节"，而不是三条互不相干的搜索结果。
+ */
+function renderRefine(term, d) {
+  const rs = (d && d.results) || [];
+  const head = `<div class="ph"><span class="pt">「${esc(term)}」</span></div>`;
+  if (!rs.length) {
+    return head + '<div class="hint" style="padding:4px 0">资料库里没有匹配条目</div>' +
+      `<div class="pfoot">点击关键词查看完整佐证</div>`;
+  }
+  const byFile = new Map();
+  for (const r of rs) {
+    const k = r.rel || r.title || "?";
+    if (!byFile.has(k)) {
+      byFile.set(k, { rel: r.rel || "", title: r.title || k, label: r.label || "", hits: [] });
+    }
+    byFile.get(k).hits.push(r);
+  }
+  let html = head;
+  for (const [, f] of byFile) {
+    // 章节面包屑："A > B > C" 取末两级并用 › 连接——够定位，不啰嗦
+    const parts = String(f.hits[0].heading || "").split(">").map(s => s.trim()).filter(Boolean);
+    const crumb = parts.slice(-2).join(" › ");
+    html += `<div class="prow">
+      <div class="psrc">${esc(f.rel || f.title)}${f.label ? ` <span class="plab">${esc(f.label)}</span>` : ""}</div>
+      ${crumb ? `<div class="pcrumb">${esc(crumb)}</div>` : ""}`;
+    for (const h of f.hits) {
+      html += `<div class="pq">${mdTerms(h.snippet || "", [term])}</div>`;
+    }
+    html += `</div>`;
+  }
+  return html + `<div class="pfoot">点击关键词查看完整佐证</div>`;
+}
+
+async function showPop(anchorEl, term) {
+  hoverTerm = anchorEl;
+  document.querySelectorAll(".kw.on").forEach(x => x.classList.remove("on"));
+  anchorEl.classList.add("on");
+  pop.style.display = "block";
+  pop.innerHTML = `<div class="ph"><span class="pt">「${esc(term)}」</span>
+    <span class="pm">检索中…</span></div>`;
+  position(anchorEl);
+  let d = refineCache.get(term);
+  if (!d) {
+    try {
+      d = await (await fetch("/api/refine?term=" + encodeURIComponent(term))).json();
+      refineCache.set(term, d);
+    } catch (e) { d = { results: [], elapsed_ms: 0 }; }
+  }
+  if (hoverTerm !== anchorEl) return;      // 鼠标已经移开了，别把卡片画上去
+  pop.innerHTML = renderRefine(term, d);
+  position(anchorEl);
+}
+
+function position(a) {
+  const r = a.getBoundingClientRect();
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = Math.min(r.left - 10, innerWidth - w - 12);
+  let top = r.bottom + 8;
+  if (top + h > innerHeight - 10) top = Math.max(10, r.top - h - 8);
+  pop.style.left = Math.max(10, left) + "px";
+  pop.style.top = top + "px";
+}
+
+// 点击关键词 → 右栏显示完整佐证（hover 是摘要，click 是证据，两级）
+document.addEventListener("click", async e => {
+  const k = e.target.closest && e.target.closest(".kw");
+  if (!k) return;
+  const term = k.dataset.term;
+  const seg = [...S.segByIdx.values()].find(s => (s.text || "").includes(term));
+  const clue = S.clues.find(c => c.anchor === term || c.text.includes(term));
+  if (clue) { openDetail(clue); return; }
+    // 没有对应线索时，用一个临时对象走同一条渲染路径，保持交互一致。
+    // 带上 _seg：关键词这条路拿不到服务端的 segment，而"这句话出自哪一句发言"
+    // 正是佐证面板最该显示的东西。
+    await openDetail({ id: "term:" + term, kind: "term", anchor: term,
+      t: seg ? seg.start : 0, text: term,
+      meta: S.types.term || { label: "关键词", tone: "term" },
+      seg_id: seg ? seg.id : "", _seg: seg || null });
+});
+
+// ── 搜索 ────────────────────────────────────────────────────────────
+let sSel = 0, sRows = [];
+function openSearch() {
+  $("#search").classList.add("on");
+  $("#s-in").value = ""; $("#s-in").focus();
+  $("#s-res").innerHTML = "";
+  sRows = []; sSel = 0;
+}
+function closeSearch() { $("#search").classList.remove("on"); }
+$("#btn-search").onclick = openSearch;
+$("#search").onclick = e => { if (e.target.id === "search") closeSearch(); };
+
+let sTimer = null;
+$("#s-in").addEventListener("input", () => {
+  clearTimeout(sTimer);
+  sTimer = setTimeout(runSearch, 180);
+});
+$("#s-in").addEventListener("keydown", e => {
+  if (e.key === "ArrowDown") { sSel = Math.min(sSel + 1, sRows.length - 1); paintSearch(); e.preventDefault(); }
+  if (e.key === "ArrowUp") { sSel = Math.max(sSel - 1, 0); paintSearch(); e.preventDefault(); }
+  if (e.key === "Enter") { gotoResult(); }
+  if (e.key === "Escape") { closeSearch(); }
+});
+
+async function runSearch() {
+  const q = $("#s-in").value.trim();
+  if (!q) { $("#s-res").innerHTML = ""; sRows = []; return; }
+  const d = await (await fetch("/api/search?q=" + encodeURIComponent(q))).json();
+  sRows = [];
+  for (const s of (d.segments || []))
+    sRows.push({ kind: "发言", title: fmtT(s.start), text: s.text, idx: s.idx });
+  for (const r of (d.corpus || []))
+    sRows.push({ kind: r.label || "资料", title: r.title, text: r.snippet, clue: null });
+  sSel = 0;
+  paintSearch(q);
+}
+
+function paintSearch(q) {
+  const box = $("#s-res");
+  if (!sRows.length) {
+    box.innerHTML = '<div class="empty" style="padding:20px">没有匹配</div>';
+    return;
+  }
+  box.textContent = "";
+  sRows.forEach((r, i) => {
+    const row = el("div", "s-row" + (i === sSel ? " on" : ""));
+    const t = el("div", "s-rt", r.kind + " · " + r.title);
+    const x = el("div", "s-rx");
+    x.innerHTML = mdTerms(r.text || "", q ? [q] : []);
+    row.append(t, x);
+    row.onclick = () => { sSel = i; gotoResult(); };
+    box.appendChild(row);
+  });
+  box.querySelector(".s-row.on")?.scrollIntoView({ block: "nearest" });
+}
+
+function gotoResult() {
+  const r = sRows[sSel];
+  if (!r) return;
+  closeSearch();
+  if (r.idx != null && S.segByIdx.has(r.idx)) {
+    S.follow = false;
+    selectSeg(r.idx, true);
+    const n = $(`#feed .utt[data-idx="${r.idx}"]`);
+    if (n) { n.style.transition = "background .1s"; n.style.background = "var(--accent-soft)";
+      setTimeout(() => { n.style.background = ""; }, 1100); }
+  } else {
+    toast(r.kind + "：" + r.title);
+  }
+}
+
+// ── 交互杂项 ────────────────────────────────────────────────────────
+// 折叠栏。两套类名对应两档默认值：宽屏默认都显示（用 hide-*），窄屏默认都
+// 隐藏（用 show-*）。断点值和 CSS 里的 1060px 必须一致，否则按钮会点不动。
+const NARROW = 1060;
+$("#btn-left").onclick = () => {
+  const m = $("#main");
+  if (innerWidth <= NARROW) m.classList.toggle("show-left");
+  else m.classList.toggle("hide-left");
+};
+$("#btn-right").onclick = () => {
+  const m = $("#main");
+  if (innerWidth <= NARROW) m.classList.toggle("show-right");
+  else m.classList.toggle("hide-right");
+};
+$("#btn-transcript").onclick = () => window.open("/api/transcript", "_blank");
+$("#btn-test").onclick = async () => {
+  const path = prompt("要回放的 WAV 路径（当成麦克风输入）：",
+    "E:\\markdown\\meeting-assistant\\data\\meeting-audio\\meeting.ogg");
+  if (!path) return;
+  const d = await (await fetch("/api/audio/test", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, speed: 1 }) })).json();
+  toast(d.error ? d.error : "开始回放，发言会实时出现（1 倍速）", 3000);
+};
+$("#d-close").onclick = () => { $("#detail").style.display = "none";
+  S.detailFor = null; renderClues(); };
+$("#add-person").onclick = addPerson;
+$("#new-person").addEventListener("keydown", e => { if (e.key === "Enter") addPerson(); });
+async function addPerson() {
+  const v = $("#new-person").value.trim();
+  if (!v) return;
+  // 支持"姓名 单位"一次输入，省掉一次对话
+  const parts = v.split(/[\s,，]+/).filter(Boolean);
+  const d = await (await fetch("/api/participants", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: parts[0], org: parts[1] || "", role: parts[2] || "" }) })).json();
+  if (d.error) { toast(d.error); return; }
+  $("#new-person").value = "";
+  tick();
+}
+
+// 标题可改并即时保存（会议名字往往只有开会时才知道）
+$("#title").addEventListener("change", async () => {
+  const t = $("#title").value.trim();
+  if (!t) return;
+  const d = await (await fetch("/api/title", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: t }) })).json();
+  if (d.title) { S.title = d.title; $("#title").value = d.title; }
+});
+
+// 用户手动滚动就停止自动跟随——否则正在读的内容会被新发言顶走
+$("#feed").addEventListener("scroll", () => {
+  const f = $("#feed");
+  S.follow = f.scrollHeight - f.scrollTop - f.clientHeight < 60;
+});
+$("#feed").addEventListener("click", e => {
+  if (e.target.id === "feed" || e.target.classList.contains("feed")) {
+    const last = S.seqMax;
+    if (last >= 0) selectSeg(last, false);
+  }
+});
+
+// ── 使用引导 ────────────────────────────────────────────────────────
+// 只在"这台机器第一次打开"时自动出现一次。**标记记在服务端**（data/guide-seen，
+// 由 /api/state 的 service.guide_seen 带回来，关掉时 POST /api/guide-seen）：
+// 启动器用 pywebview + WebView2，默认 private_mode=True——用户数据目录建在内存里、
+// 退出即删，localStorage 一律不保留。标记要是写在浏览器里，用户每次开应用都会被
+// 引导盖一遍，那比没有引导更烦。
+//
+// 自动化工具（audit / probe / 截图）在 URL 上带 ?guide=off 就不弹：它们启动的是全新
+// profile，靠"已看过"的标记没法稳定跳过，而一个透明全屏层会把它们的鼠标事件和
+// Esc 断言全吃掉。只有 probe_guide_ui.js 不加这个参数——"第一次打开会弹"这件事
+// 只在那种状态下存在。
+//
+// 每一步指向一个**布局上一定存在**的控件（顶栏按钮 / 中栏容器），不指列表项：
+// 发言流和线索列表每秒都在重建，指到列表项上的环会跟着节点一起消失。
+const GUIDE_STEPS = [
+  {
+    t: "先点「录音」",
+    target: "#btn-mic",
+    d: "点<b>录音</b>开始，说完再点一次，这一段就结束了。识别是<b>边录边出字</b>的：" +
+       "第一遍先快速出字，随后模型回头把它改准，所以刚出现的句子还会变。" +
+       "音频、识别、检索全在本机跑，全程不联网。",
+    w: "顶栏「录音」。首次启动要等模型加载完（按钮上会写「ASR 加载中…」），" +
+       "加载好再点，否则开头几句会被丢掉",
+  },
+  {
+    t: "发言流怎么读",
+    target: "#feed",
+    d: "每句话都带说话人和时间。带<b>下划线</b>的词是自动抽出来的术语或线索锚点：" +
+       "<b>悬停</b>看它是什么，<b>点一下</b>看它在资料库里的原文出处。" +
+       "页面右下角会一直跟着最新一句，你手动往上翻，它就停止跟随。",
+    w: "中栏「发言流」（Alt+J / Alt+K 上下句，Alt+G 回到最新一句）",
+  },
+  {
+    t: "右栏的「线索」",
+    target: "#btn-right",
+    d: "右栏把发言里的事情抽成线索：<b>任务、风险、承诺、决定</b>，每条都带证据来自哪一句。" +
+       "点开一条看佐证；Ctrl+S 把当前发言的第一条线索置顶，方便会后照着做。",
+    w: "顶栏「线索」（按 2 也能折叠/展开这一栏）",
+  },
+  {
+    t: "便签 = 我的发言计划",
+    target: "#btn-notes",
+    d: "开会时记自己要讲的要点：在输入框里打一行、按回车就变成一张便签，" +
+       "可以拖到台上当提词。便签会写进项目的<b>发言计划.md</b>，散会也不丢，" +
+       "在编辑器里改完点「读文件」就能读回来。",
+    w: "中栏右下「便签」（Alt+P 显示/隐藏，Alt+L 直接跳到写要点）",
+  },
+  {
+    t: "把会议流程导进来",
+    target: "#pa-import",
+    d: "主持人给的 docx / md / txt 可以导进来。两者的分工是：" +
+       "<b>流程决定我该听什么，便签决定我该讲什么</b>。" +
+       "导入时要说清归入哪个库——这次会议才用的流程进<b>项目库</b>，" +
+       "长期有效的合同、资质、规范才进<b>公共库</b>。",
+    w: "中栏「会议流程」右上角的「导入」",
+  },
+  {
+    t: "设置里能自查，也能随时回来看这份引导",
+    target: "#btn-settings",
+    d: "设置里四件事都能自查能不能用：<b>语音识别、嵌入模型、大模型、知识库</b>，" +
+       "不可用的会直接标出来。大模型是可选增强——没配它只是少一点智能，" +
+       "规则分类照常工作，不会瘫痪。",
+    w: "顶栏「设置」。快捷键：",
+    keys: [
+      ["Alt+J / Alt+K", "上一句 / 下一句"],
+      ["Alt+G", "回到最新一句"],
+      ["Alt+P / Alt+L", "显示便签 / 写要点"],
+      ["Ctrl+K / Ctrl+,", "搜索 / 设置"],
+      ["Ctrl+S / Ctrl+E", "置顶当前线索 / 导出转写"],
+      ["1 / 2 / Esc", "折叠左栏 / 右栏 / 取消选择"],
+    ],
+  },
+];
+
+let gIdx = 0;
+
+function guidePaint() {
+  const step = GUIDE_STEPS[gIdx];
+  $("#g-count").textContent = (gIdx + 1) + " / " + GUIDE_STEPS.length;
+  const body = $("#g-body");
+  body.innerHTML = "";
+  const head = el("div", "g-title");
+  head.appendChild(el("span", "g-num", String(gIdx + 1)));
+  head.appendChild(el("span", null, step.t));
+  body.appendChild(head);
+  const text = el("div", "g-text");
+  text.innerHTML = step.d;
+  body.appendChild(text);
+  if (step.keys) {
+    const box = el("div", "g-keys");
+    for (const pair of step.keys) {
+      const line = el("div");
+      line.appendChild(el("b", null, pair[0]));
+      line.appendChild(document.createTextNode(pair[1]));
+      box.appendChild(line);
+    }
+    body.appendChild(box);
+  }
+  if (step.w) {
+    const where = el("div", "g-where");
+    where.innerHTML = step.w;
+    body.appendChild(where);
+  }
+  $("#g-prev").disabled = gIdx === 0;
+  $("#g-next").textContent = gIdx === GUIDE_STEPS.length - 1 ? "开始使用" : "下一步";
+  body.scrollTop = 0;
+  guideHighlight(step.target);
+}
+
+// 强调环加在目标控件上。不用"挖一个高亮洞"：洞要跟着布局算坐标，窗口一缩、
+// 栏一折叠就跑到别处去了；而 outline 不参与布局，加在哪都只是画一圈线。
+function guideHighlight(sel) {
+  for (const node of document.querySelectorAll(".g-hl")) node.classList.remove("g-hl");
+  if (!sel) return;
+  const node = document.querySelector(sel);
+  if (!node) return;
+  node.classList.add("g-hl");
+  try { node.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (e) { /* 老浏览器 */ }
+}
+
+function openGuide() {
+  gIdx = 0;
+  $("#guide").classList.add("on");
+  guidePaint();
+}
+
+// 关闭即"看过了"。跳过、点外面、按 Esc 都算——它只自动弹一次，纠结"有没有看完"
+// 只会让下一个人再被弹一次。标记写不进去也不打断用户：那只是下次还会弹一遍。
+function closeGuide() {
+  $("#guide").classList.remove("on");
+  guideHighlight(null);
+  S.guideSeen = true;
+  fetch("/api/guide-seen", { method: "POST" }).catch(() => {});
+}
+
+function maybeShowGuide() {
+  if (S.guideSeen) return;
+  // 自动化工具用的开关，见本节开头。放在标记判断之后：正常用户碰不到这条路径。
+  let off = "";
+  try { off = new URLSearchParams(location.search).get("guide") || ""; } catch (e) { off = ""; }
+  if (off === "off") return;
+  openGuide();
+}
+
+$("#g-prev").onclick = () => { if (gIdx > 0) { gIdx--; guidePaint(); } };
+$("#g-next").onclick = () => {
+  if (gIdx < GUIDE_STEPS.length - 1) { gIdx++; guidePaint(); return; }
+  closeGuide();
+};
+$("#g-close").onclick = closeGuide;
+$("#guide").onclick = e => { if (e.target.id === "guide") closeGuide(); };
+
+// ── 键盘 ────────────────────────────────────────────────────────────
+// 全部用组合键（Alt / Ctrl），因为单键会和"在输入框里打字"抢字符。
+// 第一版用 j/k// 这些单键，结果用户在「我的发言计划」输入框里打一条内容时，
+// 每个字符都可能触发命令——尤其 `/`：它的判断写在 typing 守卫之前就先
+// preventDefault() 了，所以打斜杠必然弹出搜索框，连字都打不进去。
+// 组合键把"打字"和"命令"这两件事在物理上分开，不再依赖守卫是否写对。
+function isTyping(el) {
+  if (!el) return false;
+  const tag = (el.tagName || "").toUpperCase();
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"
+    || el.isContentEditable === true;
+}
+
+document.addEventListener("keydown", e => {
+  const typing = isTyping(e.target);
+
+  // Esc 与是否在输入框无关：先离开输入、再关弹层、再取消选择。
+  if (e.key === "Escape") {
+    // 覆盖层比输入框更"外面"：设置面板里按 Esc 应该关面板，
+    // 而不是只把焦点从输入框上拿开、把面板留在原地。
+    // 引导在最上层，所以它先接 Esc：否则第一次打开时按 Esc 会去关别的层，
+    // 而用户眼前明明盖着引导。
+    if ($("#guide").classList.contains("on")) { closeGuide(); return; }
+    if ($("#imp").classList.contains("on")) { closeImport(); return; }
+    if ($("#settings").classList.contains("on")) { closeSettings(); return; }
+    if ($("#search").classList.contains("on")) { closeSearch(); return; }
+    if (typing) { e.target.blur(); return; }
+    hidePop();
+    if ($("#detail").style.display !== "none") { $("#d-close").onclick(); return; }
+    S.curSpeaker = null;
+    renderPeople();
+    return;
+  }
+
+  // 输入框里的普通按键一律不管——这是硬保证，不是"尽量"。
+  if (typing) return;
+
+  const mod = e.ctrlKey || e.metaKey;
+  const alt = e.altKey;
+
+  // 面板开合在输入框外也用单键，因为它不产生字符，不会和打字冲突。
+  if (!mod && !alt) {
+    if (e.key === "1") { $("#btn-left").onclick(); return; }
+    if (e.key === "2") { $("#btn-right").onclick(); return; }
+    if (e.key === "?" ) { showKeys(); return; }
+  }
+
+  if (alt && e.key.toLowerCase() === "j") { stepSeg(1); e.preventDefault(); return; }
+  if (alt && e.key.toLowerCase() === "k") { stepSeg(-1); e.preventDefault(); return; }
+  if (alt && e.key.toLowerCase() === "g") { S.follow = true; scrollFeed(); return; }
+  if (alt && e.key.toLowerCase() === "p") { toggleNotes(); return; }
+  if (alt && e.key.toLowerCase() === "l") { $("#pp-input").focus(); return; }
+  if (mod && e.key.toLowerCase() === "k") {
+    e.preventDefault(); openSearch(); return;              // 搜索：Ctrl/Cmd+K
+  }
+  if (mod && e.key === ",") {
+    // Ctrl+, 是各家软件的设置快捷键，不产生字符也不会误触浏览器
+    e.preventDefault(); openSettings(); return;
+  }
+  if (mod && e.key.toLowerCase() === "e") {
+    e.preventDefault(); window.open("/api/transcript", "_blank"); return;
+  }
+  if (mod && e.key.toLowerCase() === "s") {
+    // Ctrl+S 落成"置顶当前发言的第一条线索"，顺手且不会误触浏览器保存
+    e.preventDefault();
+    const seg = S.segByIdx.get(S.selected);
+    const c = seg ? S.clues.find(x => x.seg_id === seg.id) : null;
+    if (!c) { toast("当前发言没有线索"); return; }
+    fetch("/api/clue", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: c.id, pinned: !c.pinned }) }).then(() => {
+      toast(c.pinned ? "已取消置顶" : "已置顶"); tick(); });
+    return;
+  }
+});
+
+function showKeys() {
+  toast("Alt+J/K 上下句 · Alt+G 到底 · Alt+P 便签 · Alt+L 写要点 · Ctrl+K 搜索 · " +
+        "Ctrl+, 设置 · Ctrl+S 置顶线索 · Ctrl+E 导出 · 1/2 折叠栏 · Esc 取消" +
+        "（完整的使用引导：设置 → 界面）", 6000);
+}
+
+function stepSeg(dir) {
+  const idxs = [...S.segByIdx.values()].sort((a, b) => a.start - b.start).map(s => s.idx);
+  if (!idxs.length) return;
+  let i = idxs.indexOf(S.selected);
+  i = i < 0 ? (dir > 0 ? 0 : idxs.length - 1)
+            : Math.max(0, Math.min(idxs.length - 1, i + dir));
+  S.follow = i === idxs.length - 1;
+  selectSeg(idxs[i], true);
+}
+
+function toggleNotes() {
+  S.notesHidden = !S.notesHidden;
+  $("#notes-layer").classList.toggle("hidden", S.notesHidden);
+  $("#btn-notes").textContent = S.notesHidden ? "便签" : "便签 ✓";
+  // 关掉便签就把整栏宽度还给发言流。忘了这一步会出现"便签没了、右边空一大块"。
+  applyNoteLane();
+}
+
+// ── 主题 ────────────────────────────────────────────────────────────
+// 只有两个主题，切换就是把 data-theme 换掉——所有颜色都走 CSS 变量，
+// 所以没有任何组件需要知道当前主题，也没有一处需要 JS 改颜色。
+// 暗色是主打；亮色保留。选择记在 localStorage，下次打开保持。
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") || "dark";
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const b = $("#btn-theme");
+  if (b) {
+    // 按钮显示的是"切过去会变成什么"还是"当前是什么"，这两种都有人用；
+    // 这里显示目标（点一下会到哪），并在 title 里说清当前状态。
+    b.textContent = theme === "dark" ? "亮色" : "暗色";
+    b.title = "当前：" + (theme === "dark" ? "暗色" : "亮色") + "，点击切换";
+  }
+  try {
+    localStorage.setItem("plaud-theme", theme);
+  } catch (e) { /* 隐私模式：不记忆，本次会话内仍然生效 */ }
+}
+
+$("#btn-theme").onclick = () => {
+  applyTheme(currentTheme() === "dark" ? "light" : "dark");
+};
+
+// 跟随系统只在用户没手动选过时生效——手动选过就该一直听用户的。
+try {
+  if (!localStorage.getItem("plaud-theme") &&
+      window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: light)").matches) {
+    applyTheme("light");
+  }
+} catch (e) { /* 同上 */ }
+applyTheme(currentTheme());
+
+// ── 启动 ────────────────────────────────────────────────────────────
+// 启动失败必须在页面上看得见。第一版只是 console.error，于是"接口 404 / 服务没起 /
+// JS 报错"这一整类故障在用户眼里都只是"页面没有反应"——用户报"显示错误"时，
+// 我这边只能靠无头浏览器猜。现在任何启动异常都会把原因直接印在页面上。
+function bootFail(what, err) {
+  const box = document.getElementById("boot-error");
+  if (!box) return;
+  box.style.display = "block";
+  box.textContent = "启动/连接失败：" + what + " — " + (err && err.message ? err.message : err) +
+    "\n\n界面每 0.4 秒会自动重试；若一直不通，看启动器窗口里的日志" +
+    "（data/launcher/backend.log），或确认 python -m meeting.server 在运行。" +
+    "\n当前地址：" + location.href;
+}
+
+// 短暂连不上不等于坏了：重启服务、加载大模型时都会这样。这时给一句中性提示，
+// 别说成"失败"——恢复之后它会自己消失（tick 成功就隐藏）。
+function bootWait(n) {
+  const box = document.getElementById("boot-error");
+  if (!box) return;
+  box.style.display = "block";
+  box.textContent = "服务暂时不可用（可能正在重启 / 加载模型）——界面会自动重连，不用管。\n"
+    + "第 " + n + " 次未连上 · " + location.href;
+}
+
+async function boot() {
+  try {
+    await tick();
+  startStream();   // 首帧之后开推送（推送只管增量，首帧仍然要拉）
+  // 引导放在首帧之后：盖在一片空态上的引导只会让人以为界面是空的。
+  // 只在这里调一次——轮询里不调，否则用户关掉它之后每秒都会被重新弹出来。
+  maybeShowGuide();
+  } catch (e) {
+    bootFail("首次读取会话失败", e);
+  }
+  // 轮询一直失败也要浮出来，而不是让界面永远停在初始空态
+  let fails = 0;
+  setInterval(async () => {
+    try {
+      await tick();
+      fails = 0;
+      const box = document.getElementById("boot-error");
+      if (box) box.style.display = "none";
+    } catch (e) {
+      fails++;
+      // 短暂断连（重启服务 / 加载模型）说成"暂时不可用"，别说成失败；
+      // 连续十几秒都不通才升级成真错误。
+      if (fails >= 25) bootFail("连续 " + fails + " 次读取会话失败", e);
+      else if (fails >= 3) bootWait(fails);
+    }
+  }, 400);
+}
+window.addEventListener("error", ev => bootFail("脚本异常", ev.message || ev.error));
+window.addEventListener("unhandledrejection", ev => bootFail("未处理的异步异常", ev.reason));
+boot();
+
+</script>
+</body>
+</html>

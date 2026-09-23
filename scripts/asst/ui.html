@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实时会议助理 · 段落热区</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --dim:#8b93a7; --accent:#4c9aff; --accent2:#2d7dd2;
+    --hot:#ffd166; --hit:#39d98a; --warn:#ff8fa3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.7 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);
+         display:flex;gap:18px;align-items:baseline;flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;font-weight:600}
+  header .meta{color:var(--dim);font-size:12.5px}
+  header .meta b{color:var(--text);font-weight:600}
+  main{max-width:1180px;margin:0 auto;padding:20px}
+  .card{background:var(--panel);border:1px solid var(--line);
+        border-radius:10px;padding:16px 18px;margin-bottom:16px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--dim);
+           font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+  textarea{width:100%;min-height:92px;background:var(--panel2);color:var(--text);
+           border:1px solid var(--line);border-radius:8px;padding:11px 13px;
+           font:inherit;resize:vertical}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  button{background:var(--accent2);color:#fff;border:0;border-radius:7px;
+         padding:8px 15px;font:inherit;cursor:pointer}
+  button:hover{background:var(--accent)}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--dim)}
+  button.ghost:hover{border-color:var(--accent);color:var(--text);background:transparent}
+  label.chk{display:inline-flex;gap:6px;align-items:center;color:var(--dim);font-size:13px}
+
+  /* 段落展示 + 关键词热区 */
+  #segment{font-size:17px;line-height:2.1;white-space:pre-wrap;word-break:break-word}
+  .hot{background:rgba(255,209,102,.13);border-bottom:2px solid var(--hot);
+       padding:1px 2px;border-radius:3px;cursor:help;position:relative}
+  .hot:hover{background:rgba(255,209,102,.3)}
+  .hot.on{background:rgba(76,154,255,.32);border-bottom-color:var(--accent)}
+
+  /* 悬浮结果卡 */
+  #pop{position:fixed;z-index:50;max-width:520px;display:none;
+       background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+       box-shadow:0 10px 34px rgba(0,0,0,.55);padding:12px 14px;font-size:13.5px;
+       line-height:1.6}
+  #pop .t{color:var(--hot);font-weight:600;margin-bottom:8px;
+          display:flex;justify-content:space-between;gap:12px}
+  #pop .t .ms{color:var(--dim);font-weight:400;font-size:12px}
+  #pop .r{padding:8px 0;border-top:1px solid var(--line)}
+  #pop .r:first-of-type{border-top:0}
+  #pop .h{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+  #pop .rel{color:var(--accent);font-size:12.5px}
+  #pop .sc{color:var(--hit);font-size:12px}
+  #pop .hd{color:var(--dim);font-size:12px}
+  #pop .sn{color:var(--text);margin-top:3px}
+  #pop .sn mark{background:rgba(255,209,102,.28);color:inherit;border-radius:2px}
+  #pop .empty{color:var(--dim)}
+
+  /* 结果列表 */
+  .res{border-left:2px solid var(--line);padding:9px 0 9px 13px;margin-bottom:9px}
+  .res:last-child{margin-bottom:0}
+  .res .h{display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
+  .res .rel{color:var(--accent);font-weight:600;font-size:13.5px}
+  .res .sc{color:var(--hit);font-size:12px}
+  .res .mt{color:var(--dim);font-size:12px}
+  .res .sn{margin-top:4px;color:#cfd5e2;font-size:13.5px}
+  .res .sn mark{background:rgba(255,209,102,.28);color:inherit;border-radius:2px}
+  .tag{display:inline-block;background:rgba(76,154,255,.16);color:var(--accent);
+       border-radius:4px;padding:0 6px;font-size:11.5px;line-height:18px}
+  .kws{display:flex;gap:7px;flex-wrap:wrap}
+  .kw{border:1px solid var(--line);border-radius:6px;padding:3px 9px;
+      font-size:13px;color:var(--dim)}
+  .kw b{color:var(--hot);font-weight:600}
+  .err{color:var(--warn)}
+</style>
+</head>
+<body>
+<header>
+  <h1>实时会议助理 · 段落热区</h1>
+  <div class="meta" id="hdr">加载中…</div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>① 输入 / 模拟 ASR 段落</h2>
+    <textarea id="seg" placeholder="粘贴一段发言，或点「取一段真实文档」…"></textarea>
+    <div class="row">
+      <button id="go">分析并生成热区</button>
+      <button class="ghost" id="demo">取一段真实文档</button>
+      <label class="chk"><input type="checkbox" id="eager"> 生成时预先检索每个关键词</label>
+      <span class="meta" id="timing"></span>
+    </div>
+  </div>
+
+  <div class="card" id="segcard" style="display:none">
+    <h2>② 发言段落（<span style="color:var(--hot)">黄色</span>为关键词热区，鼠标移上去查看检索结果）</h2>
+    <div id="segment"></div>
+    <div class="row"><span class="kws" id="kwlist"></span></div>
+  </div>
+
+  <div class="card" id="rescard" style="display:none">
+    <h2>③ 整段检索结果（主答案来源）</h2>
+    <div id="results"></div>
+  </div>
+</main>
+
+<div id="pop"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const pop = $('#pop');
+let hoverTimer = null, cache = new Map(), lastTerm = null;
+
+// ---- 初始化 ----
+fetch('/api/stats').then(r => r.json()).then(s => {
+  const i = s.index;
+  $('#hdr').innerHTML =
+    `索引 <b>${i.chunks}</b> chunks · <b>${i.files}</b> 文件 · ` +
+    `嵌入 <b>${i.embedder}</b> · 启动 <b>${s.load_ms.toFixed(0)}ms</b> · ` +
+    `预热 <b>${s.warm_ms.toFixed(0)}ms</b> · ASR <b>${s.asr_available ? '就绪' : '缺失'}</b>`;
+}).catch(e => $('#hdr').textContent = '统计加载失败: ' + e);
+
+// ---- 转义 + 关键词高亮 ----
+function esc(s){ return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function renderSegment(seg, kws){
+  // 长关键词优先，避免短词切断长词
+  const terms = kws.map(k => k.term).sort((a,b) => b.length - a.length);
+  let html = esc(seg);
+  terms.forEach((t, idx) => {
+    const safe = esc(t);
+    html = html.split(safe).join(
+      `<span class="hot" data-term="${safe}">${safe}</span>`);
+  });
+  return html;
+}
+
+// ---- 检索结果渲染 ----
+function markTerms(text, terms){
+  let h = esc(text);
+  (terms || []).sort((a,b)=>b.length-a.length).forEach(t => {
+    if (!t) return;
+    h = h.split(esc(t)).join(`<mark>${esc(t)}</mark>`);
+  });
+  return h;
+}
+
+function resultHtml(h, terms){
+  return `<div class="res">
+    <div class="h">
+      <span class="rel">${esc(h.rel)}</span>
+      <span class="tag">${esc(h.label)}</span>
+      <span class="sc">score ${h.score}</span>
+      <span class="mt">命中词 ${h.matched_terms}</span>
+    </div>
+    ${h.heading ? `<div class="hd" style="color:var(--dim);font-size:12px">${esc(h.heading)}</div>` : ''}
+    <div class="sn">${markTerms(h.snippet, terms)}</div>
+  </div>`;
+}
+
+function renderResults(container, results, terms){
+  container.innerHTML = results.length
+    ? results.map(h => resultHtml(h, terms)).join('')
+    : '<div class="empty">无结果</div>';
+}
+
+// ---- 提交段落 ----
+async function analyze(){
+  const text = $('#seg').value.trim();
+  if (!text) return;
+  const t0 = performance.now();
+  $('#go').disabled = true;
+  try {
+    const r = await fetch('/api/segment', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text, refine: $('#eager').checked})
+    });
+    const d = await r.json();
+    if (d.error){ alert(d.error); return; }
+
+    cache.clear(); lastTerm = null;
+    $('#segcard').style.display = '';
+    $('#segment').innerHTML = renderSegment(d.segment, d.keywords);
+    $('#kwlist').innerHTML = d.keywords.map(k =>
+      `<span class="kw">${esc(k.term)} <b>×${k.count}</b></span>`).join('');
+
+    const terms = d.keywords.map(k => k.term);
+    $('#rescard').style.display = '';
+    renderResults($('#results'), d.results, terms);
+
+    $('#timing').textContent =
+      `抽取 ${d.timing.keywords_ms}ms · 整段检索 ${d.timing.segment_search_ms}ms · ` +
+      `合计 ${d.timing.total_ms}ms（往返 ${(performance.now()-t0).toFixed(0)}ms）`;
+  } finally { $('#go').disabled = false; }
+}
+
+// ---- 悬浮热区 → 按需检索 ----
+function showPop(hotEl, data){
+  pop.innerHTML = `<div class="t"><span>「${esc(data.term)}」的检索结果</span>
+      <span class="ms">${data.elapsed_ms}ms${data.cached?' · 缓存':''}</span></div>`
+    + (data.results.length
+        ? data.results.map(h => `<div class="r">
+            <div class="h"><span class="rel">${esc(h.rel)}</span>
+              <span class="sc">score ${h.score}</span></div>
+            <div class="sn">${markTerms(h.snippet, [data.term])}</div>
+          </div>`).join('')
+        : '<div class="empty">未找到相关内容</div>');
+  const r = hotEl.getBoundingClientRect();
+  pop.style.display = 'block';
+  const w = pop.offsetWidth, hgt = pop.offsetHeight;
+  let left = Math.min(r.left, innerWidth - w - 12);
+  let top = r.bottom + 8;
+  if (top + hgt > innerHeight - 8) top = Math.max(8, r.top - hgt - 8);
+  pop.style.left = Math.max(8, left) + 'px';
+  pop.style.top = top + 'px';
+}
+
+async function refine(term){
+  if (cache.has(term)) return {...cache.get(term), cached:true};
+  const r = await fetch('/api/refine?term=' + encodeURIComponent(term));
+  const d = await r.json();
+  cache.set(term, d);
+  return d;
+}
+
+document.addEventListener('mouseover', async e => {
+  const hot = e.target.closest?.('.hot');
+  if (!hot || hot === lastTerm) return;
+  clearTimeout(hoverTimer);
+  const term = hot.dataset.term;
+  hoverTimer = setTimeout(async () => {
+    lastTerm = hot;
+    document.querySelectorAll('.hot.on').forEach(x => x.classList.remove('on'));
+    hot.classList.add('on');
+    try { showPop(hot, await refine(term)); }
+    catch (err) { pop.style.display='block'; pop.innerHTML = `<div class="err">检索失败: ${esc(String(err))}</div>`; }
+  }, 120);                       // 小延迟：鼠标划过不算
+});
+
+document.addEventListener('mouseout', e => {
+  const hot = e.target.closest?.('.hot');
+  if (hot){ clearTimeout(hoverTimer); }
+});
+document.addEventListener('scroll', () => { pop.style.display='none'; lastTerm=null; }, true);
+
+$('#go').onclick = analyze;
+$('#demo').onclick = async () => {
+  const r = await fetch('/api/demo?n=1');
+  const d = await r.json();
+  if (d.segments?.length){ $('#seg').value = d.segments[0]; analyze(); }
+};
+$('#seg').addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') analyze();
+});
+</script>
+</body>
+</html>

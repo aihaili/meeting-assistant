@@ -1,0 +1,5 @@
+# PyInstaller 构建产物（勿提交 82MB exe）
+build/
+dist/
+*.spec
+__pycache__/

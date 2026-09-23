@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实时会议助理 · 启动中</title>
+<style>
+  :root{
+    --bg:#0f1216; --surface:#161c24; --border:#242e3b; --text:#e8ebf1;
+    --text2:#9aa5b4; --muted:#6b7684; --accent:#5b9bff;
+    --ok:#38d39b; --warn:#f5b544; --err:#ff6b6b;
+    --mono: ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;font-size:14px}
+  #app{display:flex;flex-direction:column;height:100dvh}
+  #bar{display:flex;align-items:center;gap:12px;padding:0 16px;height:46px;flex:0 0 46px;
+    background:#141a21;border-bottom:1px solid var(--border)}
+  .brand{font-weight:600;font-size:15px;letter-spacing:.3px}
+  .brand .sub{color:var(--muted);font-weight:400;font-size:12px;margin-left:6px}
+  .spacer{flex:1}
+  .pill{font-size:12.5px;padding:4px 12px;border-radius:999px;border:1px solid var(--border);
+    background:var(--surface);color:var(--text2);white-space:nowrap}
+  .pill.ok{color:var(--ok);border-color:rgba(56,211,155,.4);background:rgba(56,211,155,.08)}
+  .pill.warn{color:var(--warn);border-color:rgba(245,181,68,.4);background:rgba(245,181,68,.08)}
+  .pill.bad{color:var(--err);border-color:rgba(255,107,107,.4);background:rgba(255,107,107,.08)}
+
+  #stage{flex:1;display:flex;align-items:center;justify-content:center;overflow:auto;padding:28px}
+  .wrap{width:100%;max-width:620px}
+  .spin{width:34px;height:34px;border-radius:50%;border:3px solid var(--border);
+    border-top-color:var(--accent);animation:sp 0.9s linear infinite;margin:0 auto 18px}
+  .spin.done{border-color:var(--ok);border-top-color:var(--ok);animation:none}
+  .spin.bad{border-color:var(--err);border-top-color:var(--err);animation:none}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  h1{font-size:20px;margin:0 0 6px;text-align:center;font-weight:600}
+  .state{text-align:center;color:var(--text2);font-size:13.5px;margin:0 0 4px}
+  .elapsed{text-align:center;color:var(--muted);font-size:12px;font-family:var(--mono);
+    margin:0 0 20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:14px 16px;margin-bottom:12px}
+  .card h2{font-size:11.5px;color:var(--muted);margin:0 0 8px;font-weight:600;
+    letter-spacing:.6px;text-transform:uppercase}
+  .facts{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12.5px;
+    color:var(--text2)}
+  .facts b{color:var(--text);font-weight:500;font-family:var(--mono);word-break:break-all}
+  #log{font-family:var(--mono);font-size:11.5px;line-height:1.5;color:#a8c7a0;
+    white-space:pre-wrap;word-break:break-all;max-height:150px;overflow:auto;margin:0}
+  #log:empty::before{content:"（暂无日志）";color:var(--muted)}
+  #err{display:none;background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.4);
+    color:#ffb3b3;border-radius:10px;padding:12px 14px;margin-bottom:12px;
+    font-size:12.5px;line-height:1.6;white-space:pre-wrap}
+  .actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:4px}
+  button,.link{font:inherit;cursor:pointer;border:1px solid var(--border);background:#1b232e;
+    color:var(--text);padding:7px 16px;border-radius:8px;text-decoration:none;font-size:13px}
+  button:hover,.link:hover{border-color:var(--accent);color:#fff}
+  button[hidden],.link[hidden]{display:none}
+  .tip{color:var(--muted);font-size:12px;text-align:center;margin-top:16px;line-height:1.7}
+  code{font-family:var(--mono);font-size:11.5px;background:#0b0e12;border:1px solid var(--border);
+    border-radius:5px;padding:1px 5px}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="bar">
+    <div class="brand">实时会议助理 <span class="sub">本地 · 数据不出机</span></div>
+    <div class="spacer"></div>
+    <div id="status" class="pill warn">● 启动中</div>
+  </header>
+  <div id="stage">
+    <div class="wrap">
+      <div id="spinner" class="spin"></div>
+      <h1 id="head">正在启动服务…</h1>
+      <p class="state" id="state">正在加载识别模型与知识库索引</p>
+      <p class="elapsed" id="elapsed">&nbsp;</p>
+
+      <div id="err"></div>
+
+      <div class="card">
+        <h2>状态</h2>
+        <div class="facts">
+          <span>识别引擎</span><b id="f-engine">—</b>
+          <span>服务地址</span><b id="f-url">—</b>
+          <span>日志文件</span><b id="f-log">—</b>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>启动日志</h2>
+        <pre id="log"></pre>
+      </div>
+
+      <div class="actions">
+        <button id="btn-retry" hidden>重试</button>
+        <button id="btn-openlog">打开日志文件</button>
+        <a class="link" id="btn-ext" href="#" target="_blank" hidden>在浏览器打开 ↗</a>
+      </div>
+
+      <p class="tip">
+        正常情况下窗口会直接打开会议界面，看不到这一页——它只在<b>启动较慢或失败</b>时出现。<br>
+        换 ASR 引擎 / 改知识库：进界面后打开<b>「设置」</b>，保存后点那里的<b>「重启服务」</b>即可生效。<br>
+        关闭本窗口 = 停掉识别与嵌入模型服务。
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var api = function () { return window.pywebview && window.pywebview.api; };
+  var t0 = Date.now(), lastLog = "";
+
+  function fmtElapsed() {
+    var s = Math.round((Date.now() - t0) / 1000);
+    return "已等待 " + s + " 秒";
+  }
+
+  function render(st) {
+    $("f-engine").textContent = st.engine || "funasr";
+    $("f-url").textContent = st.url || "—";
+    $("f-log").textContent = st.log_path || "—";
+    if (st.url && st.ready) $("btn-ext").href = st.url;
+
+    if (!st.venv_ok) {
+      $("err").style.display = "block";
+      $("err").textContent = "找不到 venv 解释器：" + (st.venv || "") +
+        "\n请把 MeetingLauncher 目录放到 meeting-assistant 仓库根内（或写 launcher.json 指定 repo_root）。";
+    }
+
+    var lines = st.log || [];
+    var txt = lines.join("\n");
+    if (txt !== lastLog) { $("log").textContent = txt; $("log").scrollTop = $("log").scrollHeight;
+      lastLog = txt; }
+
+    if (st.error) {
+      $("err").style.display = "block";
+      $("err").textContent = st.error;
+    } else if (st.venv_ok) {
+      $("err").style.display = "none";
+    }
+
+    $("elapsed").textContent = st.ready ? "" : fmtElapsed();
+
+    var pill = $("status"), spin = $("spinner");
+    if (st.ready) {
+      pill.textContent = "● 就绪 · 端口 " + st.port; pill.className = "pill ok";
+      spin.className = "spin done";
+      $("head").textContent = "正在进入会议界面…";
+      $("state").textContent = "识别模型在后台继续加载，录音按钮会等它就绪";
+    } else if (st.error) {
+      pill.textContent = "● 启动失败"; pill.className = "pill bad";
+      spin.className = "spin bad";
+      $("head").textContent = "服务没能启动";
+      $("state").textContent = "可以先点「重试」，或打开日志文件看最后几行";
+    } else {
+      pill.textContent = "● 启动中"; pill.className = "pill warn";
+      spin.className = "spin";
+      $("head").textContent = "正在启动服务…";
+      $("state").textContent = st.engine === "firered"
+        ? "加载 FireRedASR2S（约 5GB）与嵌入模型，首次较慢"
+        : "加载 FunASR 与嵌入模型";
+    }
+    $("btn-retry").hidden = !st.error;
+  }
+
+  async function tick() {
+    var A = api();
+    if (!A) return;
+    var st;
+    try { st = await A.get_status(); } catch (e) { return; }
+    if (!st) return;
+    render(st);
+    // 跳转不在这里做：由启动器（Python 侧）等服务健康后调 window.load_url 切到会议界面。
+    // 一个页面只留一个 owner，JS 这边只管显示状态——万一 pywebview 的 JS 桥没就绪，
+    // 界面照样能自动进主界面。
+  }
+
+  $("btn-retry").addEventListener("click", function () {
+    var A = api(); if (!A) return;
+    t0 = Date.now();
+    $("err").style.display = "none";
+    A.restart().catch(function () {});
+  });
+  $("btn-openlog").addEventListener("click", function () {
+    var A = api(); if (!A) return;
+    A.open_log().catch(function () {});
+  });
+
+  setInterval(tick, 500);
+  tick();
+})();
+</script>
+</body>
+</html>

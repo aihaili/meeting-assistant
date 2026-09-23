@@ -1,0 +1,31 @@
+{
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:8080/v1",
+    "api_key": "sk-no-key",
+    "model": "E:\\models\\Qwen3.8-27B-IQ4_XS-attnQ6K.gguf",
+    "max_tokens": 8192,
+    "no_think": true,
+    "timeout": 1800
+  },
+  "embedding": {
+    "backend": "bge-small-zh"
+  },
+  "asr": {
+    "engine": "firered",
+    "model_dir": "E:\\models\\gguf-asr",
+    "device": "cuda:0",
+    "firered_dir": "E:\\WhisperX\\FireRedASR2S",
+    "hotwords": true,
+    "hotwords_dir": ""
+  },
+  "corpora": {
+    "public_db": "",
+    "public_kb": "E:\\markdown\\meeting-assistant\\data\\public",
+    "project_db": ""
+  },
+  "ui": {
+    "theme": "dark",
+    "poll_ms": 1000
+  }
+}

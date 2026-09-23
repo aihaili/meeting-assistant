@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>meeting-assistant 架构思维导图</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1b26; overflow: hidden; }
+  #bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9;
+    padding: 6px 14px; font: 13px/1.6 "Microsoft YaHei", sans-serif;
+    color: #9aa5ce; background: rgba(26,27,38,.92); border-bottom: 1px solid #414868;
+  }
+  #bar b { color: #c0caf5; }
+  #bar .hint { color: #565f89; }
+  /* 关键：autoloader 注入的 <svg> 自身不带尺寸，
+     必须由 CSS 撑满视口，否则 markmap 按默认 300x150 渲染（图缩在角落） */
+  #mm { width: 100vw; height: 100vh; padding-top: 34px; box-sizing: border-box; }
+  #mm svg { display: block; width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/markmap-autoloader@0.18/dist/index.min.js"></script>
+</head>
+<!-- markmap-dark：暗色主题文字（默认 #333 深色字在暗底上看不清） -->
+<body class="markmap-dark">
+<div id="bar"><b>meeting-assistant 实时会议助理 · 架构思维导图</b>　
+<span class="hint">滚轮缩放 · 拖拽平移 · 点击节点折叠/展开 · 生成于 2026-09-19（git 1ccfc00 之后）·
+若本图空白（CDN 加载失败），请改用 VS Code / Obsidian 打开 architecture-mindmap.md</span></div>
+<div id="mm" class="markmap">
+---
+markmap:
+  maxWidth: 300
+  colorFreezeLevel: 2
+  autoFit: true
+---
+# meeting-assistant 实时会议助理
+
+## 入口
+- run_meeting.ps1 主入口
+  - UI + 音频 + 检索，单进程
+  - HTTP 8510
+- run_mic_live.ps1 麦克风实录
+- run_asst.ps1 独立助手
+
+## 音频层
+- LocalMicReceiver（唯一音频输入）
+  - 本机麦克风 → 16kHz 单声道
+  - replay_wav 文件回放（无麦克风可用）
+
+## ASR 识别（全本地）
+- FunASR（PyTorch）
+  - Paraformer（881MB）
+  - 标点模型（1.13GB）
+  - FSMN VAD 端点检测
+  - SeaCo 流式识别
+  - CAM++ 声纹
+  - RTF ≈ 0.027（CPU）
+- 说话人识别（闭集方案）
+  - 参会名单 + 声纹绑定
+  - voiceprints.json 跨会议记忆
+
+## 会议核心 meeting/
+- server.py
+  - HTTP 8510：UI + REST API + SSE 推送
+  - 端点：state / stats / transcript / clue / search / audio / mic / voiceprints / plan / settings / agenda
+- session.py
+  - 发言 / 线索 / 参会人
+  - 自动保存 data/sessions/*.json
+- classify.py 线索分类
+  - LLM + 规则兜底
+- outline.py 议程
+- settings.py 配置
+  - .env（最低优先）→ 环境变量 → settings.json
+- voiceprints.py CAM++ 声纹
+- ui.html 前端
+  - 三栏：参会人 / 发言 / 线索
+  - SSE 实时 + 轮询兜底
+  - 统一设置页
+
+## RAG 检索 rag/
+- rag_core.py
+  - SQLite FTS5（jieba）关键词
+  - sqlite-vec 向量
+  - RRF 融合
+- embedder.py
+  - bge-small-zh ONNX INT8
+  - 512 维，热查询 4.4ms
+  - bge-m3 多语言（可选）
+- multi_index.py 项目库 + 公共库
+- sync.py 增量同步（mtime+size）
+- 每项目独立 .plaud/rag.db
+  - 分库避免跨项目污染（混库 22% → 分库 0%）
+- events.py 事件抽取
+  - 行动项 / 甲方要求 / 截止期
+- cli.py index / search / stats
+- selftest.py 26 项健康检查
+
+## 助手 asst/
+- core.py
+  - 关键词抽取 → RAG 检索 → LLM 生成
+- server.py + ui.html 独立助手
+
+## LLM 层
+- llm_client.py（共享，lazy import）
+  - llama.cpp :8080（Qwen3.8-27B GGUF）
+  - claude_cli / none（纯规则）
+
+## 导出
+- export_minutes.py 会议纪要
+- export_obsidian.py Obsidian + 别名归一
+
+## 配置与数据
+- config/settings.json
+  - llm / embedding / asr / corpora / ui
+- config/.env 遗留机制（最低优先）
+- data/sessions/ 会话自动保存
+- 项目文件夹/.plaud/
+  - rag.db + voiceprints.json
+
+## 运行时数据流
+- 麦克风 → 16k 单声道
+- → FunASR 流式识别 + VAD 切分
+- → SSE 推 UI（发言）
+- → classify（线索）
+- → CAM++ 声纹归属
+- → RAG（项目库）→ 助手问答
+- → 会话自动保存
+
+## 开发工具
+- probe_* / test_* / eval_* / check_* 脚本
+- selftest：rag 26 项
+</div>
+</body>
+</html>
